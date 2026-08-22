@@ -1,5 +1,6 @@
 import os
 import requests
+from typing import Annotated
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 
@@ -15,7 +16,7 @@ class OrderRequest(BaseModel):
     amount: float
 
 @app.post("/execute-order")
-def execute_order(order: OrderRequest, authorization: Header(None)):
+def execute_order(order: OrderRequest, authorization: Annotated[str | None, Header()] = None):
     if authorization != f"Bearer {BRIDGE_TOKEN}":
         raise HTTPException(status_code=403, detail="Unauthorized")
 
