@@ -20,6 +20,17 @@ load_dotenv()
 latest_market_data = {}
 data_lock = threading.Lock()
 
+# ==================== لاگ (اول تعریف می‌شود تا توابع دیگر به آن دسترسی داشته باشند) ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[
+        logging.FileHandler("trading_signals.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # ==================== وب‌سرور و دریافت وب‌هوک از رندر ====================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -65,9 +76,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         return
 
 def start_health_check_server():
-    port = int(os.environ.get("PORT", 10000))
+    # اصلاح پورت برای سازگاری کامل با همروش و رفع ارور Not Ready
+    port = int(os.environ.get("PORT", 8080))
     try:
         server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info(f"وب‌سرور همروش روی پورت {port} آغاز به کار کرد.")
         server.serve_forever()
     except Exception as e:
         logger.error(f"خطا در اجرای وب‌سرور: {e}")
@@ -100,17 +113,6 @@ class Config:
 
     def validate(self):
         pass
-
-# ==================== لاگ ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[
-        logging.FileHandler("trading_signals.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # ==================== لایه تحلیل تکنیکال ====================
 class AnalysisLayer:
