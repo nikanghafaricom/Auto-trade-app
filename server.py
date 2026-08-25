@@ -1,10 +1,9 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه جامع همروش (Hamravesh - Tabdeal Spot - No AI)
+# Hybrid Signal Bot - نسخه نهایی همروش (Hamravesh - Webhook Receiver & Tabdeal Spot)
 # ==============================================
 import os
 import time
 import logging
-import requests
 import gc
 import json
 import threading
@@ -17,7 +16,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ==================== وب‌سرور استاندارد ====================
+# Global variable to store incoming data from Render
+latest_market_data = {}
+data_lock = threading.Lock()
+
+# ==================== وب‌سرور و دریافت وب‌هوک از رندر ====================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -25,10 +28,29 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Hamravesh Bot is alive and running!")
 
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
+    def do_POST(self):
+        global latest_market_data
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            symbol = data.get("symbol")
+            if symbol:
+                with data_lock:
+                    latest_market_data[symbol] = data.get("ohlcv")
+                
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success", "message": "Data received"}).encode('utf-8'))
+            else:
+                self.send_response(400)
+                self.end_headers()
+        except Exception as e:
+            logger.error(f"خطا در پردازش وب‌هوک دریافتی از رندر: {e}")
+            self.send_response(500)
+            self.end_headers()
 
     def log_message(self, format, *args):
         return
@@ -45,17 +67,9 @@ threading.Thread(target=start_health_check_server, daemon=True).start()
 
 # ==================== تنظیمات ====================
 class Config:
-    # صرافی تحلیل‌گر (دریافت داده از کوین ایکس)
-    EXCHANGE_ID = "coinex"
-    API_KEY = os.getenv("EXCHANGE_API_KEY", "")
-    SECRET = os.getenv("EXCHANGE_SECRET", "")
-    PASSWORD = os.getenv("EXCHANGE_PASSWORD", "")
-
-    # صرافی اجرایی (صرافی تبدیل - واقعی)
     TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
     TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
 
-    # رندر جهت هماهنگی ارسال به تلگرام
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
 
     SYMBOLS = [
@@ -76,7 +90,6 @@ class Config:
     CHECK_INTERVAL = 300
 
     def validate(self):
-        # بررسی متغیرهای ضروری (بخش AI حذف شد)
         pass
 
 # ==================== لاگ ====================
@@ -90,25 +103,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== لایه داده ====================
-class DataLayer:
-    def __init__(self, config: Config):
-        self.config = config
-        exchange_class = getattr(ccxt, config.EXCHANGE_ID)
-        self.exchange = exchange_class({
-            'apiKey': config.API_KEY,
-            'secret': config.SECRET,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        })
-
-    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
-        ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-
-# ==================== لایه تحلیل ====================
+# ==================== لایه تحلیل تکنیکال ====================
 class AnalysisLayer:
     def __init__(self, config: Config):
         self.config = config
@@ -138,8 +133,8 @@ class AnalysisLayer:
 
         return df
 
-    def get_major_trend(self, df_4h: pd.DataFrame) -> str:
-        latest = df_4h.iloc[-1]
+    def get_major_trend(self, df_trend: pd.DataFrame) -> str:
+        latest = df_trend.iloc[-1]
         if latest['close'] > latest['ema_trend'] and latest['ema_fast'] > latest['ema_slow']:
             return "BULLISH"
         elif latest['close'] < latest['ema_trend'] and latest['ema_fast'] < latest['ema_slow']:
@@ -245,6 +240,7 @@ class RenderNotifier:
         if not self.config.RENDER_WEBHOOK_URL:
             return
         try:
+            import requests
             requests.post(self.config.RENDER_WEBHOOK_URL, json=payload, timeout=10)
         except Exception as e:
             logger.error(f"خطا در ارسال داده به رندر: {e}")
@@ -254,7 +250,6 @@ class HamraveshTradingSystem:
     def __init__(self):
         self.config = Config()
         self.config.validate()
-        self.data = DataLayer(self.config)
         self.analysis = AnalysisLayer(self.config)
         self.signal_engine = SignalEngine(self.config)
         self.tabdeal = TabdealTrader(self.config)
@@ -262,17 +257,18 @@ class HamraveshTradingSystem:
         self.running = True
         self.last_signal_time: Dict[str, datetime] = {}
 
-    def process_symbol(self, symbol: str):
+    def process_symbol_from_webhook(self, symbol: str, ohlcv_data: list):
         try:
-            df_15m = self.data.fetch_ohlcv(symbol, timeframe=self.config.ENTRY_TIMEFRAME)
-            df_15m = self.analysis.calculate_indicators(df_15m)
+            if not ohlcv_data or len(ohlcv_data) < 50:
+                return
 
-            df_4h = self.data.fetch_ohlcv(symbol, timeframe=self.config.TREND_TIMEFRAME)
-            df_4h = self.analysis.calculate_indicators(df_4h)
+            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            df_indicators = self.analysis.calculate_indicators(df)
+            trend = self.analysis.get_major_trend(df_indicators)
 
-            trend_4h = self.analysis.get_major_trend(df_4h)
-
-            rule_signal = self.signal_engine.get_rule_signal(df_15m, trend_4h)
+            rule_signal = self.signal_engine.get_rule_signal(df_indicators, trend)
             if not rule_signal:
                 return
 
@@ -281,10 +277,10 @@ class HamraveshTradingSystem:
                 if now - self.last_signal_time[symbol] < timedelta(minutes=90):
                     return
 
-            latest = df_15m.iloc[-1]
+            latest = df_indicators.iloc[-1]
             price = float(latest['close'])
             
-            # بررسی موجودی و باز کردن معامله واقعی اسپات در صرافی تبدیل بر اساس تحلیل تکنیکال خالص
+            # اجرای سفارش اسپات در صرافی تبدیل
             order_result = self.tabdeal.execute_spot_order(symbol, rule_signal, price)
 
             if order_result:
@@ -293,27 +289,26 @@ class HamraveshTradingSystem:
                     "symbol": symbol,
                     "side": rule_signal,
                     "price": price,
-                    "trend_4h": trend_4h
+                    "trend": trend
                 }
                 self.notifier.send_to_render(payload)
 
             self.last_signal_time[symbol] = now
 
         except Exception as e:
-            logger.error(f"خطا در پردازش همروش برای {symbol}: {e}")
-
-    def run_once(self):
-        logger.info("----- شروع آنالیز و اجرای همروش (بدون هوش مصنوعی) -----")
-        for symbol in self.config.SYMBOLS:
-            self.process_symbol(symbol)
-            time.sleep(1.5)
+            logger.error(f"خطا در پردازش داده وب‌هوک برای {symbol}: {e}")
 
     def start(self):
-        logger.info("بخش همروش بات فعال شد (حالت واقعی - اسپات - خالص تکنیکال)")
+        logger.info("بخش همروش بات فعال شد (منتظر دریافت داده از رندر - اسپات واقعی)")
         while self.running:
-            self.run_once()
+            with data_lock:
+                current_data = dict(latest_market_data)
+            
+            for symbol, ohlcv in current_data.items():
+                self.process_symbol_from_webhook(symbol, ohlcv)
+
             gc.collect()
-            time.sleep(self.config.CHECK_INTERVAL)
+            time.sleep(10)
 
     def stop(self):
         self.running = False
