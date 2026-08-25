@@ -1,5 +1,5 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه جامع همروش (Hamravesh - Tabdeal Spot)
+# Hybrid Signal Bot - نسخه جامع همروش (Hamravesh - Tabdeal Spot - No AI)
 # ==============================================
 import os
 import time
@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import pandas as pd
 import ccxt
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -56,10 +55,6 @@ class Config:
     TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
     TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
 
-    AI_API_KEY = os.getenv("AI_API_KEY")
-    AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.x.ai/v1")
-    AI_MODEL = os.getenv("AI_MODEL", "grok-3")
-
     # رندر جهت هماهنگی ارسال به تلگرام
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
 
@@ -79,15 +74,10 @@ class Config:
     ENTRY_TIMEFRAME = "15m"
     TREND_TIMEFRAME = "4h"
     CHECK_INTERVAL = 300
-    MIN_CONFIDENCE_AI = 0.80
 
     def validate(self):
-        required = {
-            "AI_API_KEY": self.AI_API_KEY,
-        }
-        missing = [key for key, value in required.items() if not value]
-        if missing:
-            raise ValueError(f"این متغیرهای محیطی تنظیم نشدن: {', '.join(missing)}")
+        # بررسی متغیرهای ضروری (بخش AI حذف شد)
+        pass
 
 # ==================== لاگ ====================
 logging.basicConfig(
@@ -122,10 +112,6 @@ class DataLayer:
 class AnalysisLayer:
     def __init__(self, config: Config):
         self.config = config
-        self.client = OpenAI(
-            api_key=config.AI_API_KEY,
-            base_url=config.AI_BASE_URL
-        )
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -159,40 +145,6 @@ class AnalysisLayer:
         elif latest['close'] < latest['ema_trend'] and latest['ema_fast'] < latest['ema_slow']:
             return "BEARISH"
         return "NEUTRAL"
-
-    def get_ai_confirmation(self, symbol: str, side: str, df: pd.DataFrame, trend: str) -> Dict:
-        latest = df.iloc[-1]
-        
-        prompt = f"""
-You are an elite quantitative crypto trader.
-Context:
-- Symbol: {symbol}
-- Trade Side: {side}
-- Higher Timeframe (4H) Trend: {trend}
-- 15m Close: {latest['close']}
-- RSI: {latest['rsi']:.1f}
-- EMA20/50: {latest['ema_fast']:.2f} / {latest['ema_slow']:.2f}
-- ATR Volatility: {latest['atr']:.4f}
-- Volume ratio: {latest['volume']/latest['vol_sma']:.2f}x
-
-Assign a final score (60 to 95) evaluating if this signal matches high-probability criteria.
-Output ONLY the integer score.
-"""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.config.AI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=6
-            )
-            answer = response.choices[0].message.content.strip()
-            score = float(''.join(filter(str.isdigit, answer))) / 100.0
-            if score < 0.60 or score > 0.98:
-                score = 0.82
-            return {"confidence": score}
-        except Exception as e:
-            logger.error(f"خطای AI برای {symbol}: {e}")
-            return {"confidence": 0.80}
 
 # ==================== موتور سیگنال ====================
 class SignalEngine:
@@ -230,19 +182,17 @@ class TabdealTrader:
     def __init__(self, config: Config):
         self.config = config
         try:
-            # اتصال به صرافی تبدیل از طریق CCXT (یا پکیج سازگار)
             self.exchange = ccxt.tabdeal({
                 'apiKey': config.TABDEAL_API_KEY,
                 'secret': config.TABDEAL_SECRET,
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'} # تاکید بر اسپات بودن
+                'options': {'defaultType': 'spot'}
             })
         except Exception as e:
             logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
             self.exchange = None
 
     def get_usdt_balance(self) -> float:
-        """بررسی موجودی تتر (USDT) در صرافی تبدیل جهت مدیریت سرمایه"""
         if not self.exchange:
             return 0.0
         try:
@@ -254,31 +204,26 @@ class TabdealTrader:
             return 0.0
 
     def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.20):
-        """باز کردن معامله اسپات واقعی در تبدیل با مدیریت خودکار موجودی (بدون اهرم)"""
         if not self.exchange:
             logger.error("صرافی تبدیل مقداردهی نشده است.")
             return None
 
         try:
-            # دریافت موجودی آزاد تتر
             usdt_balance = self.get_usdt_balance()
             if usdt_balance < 10:
                 logger.warning(f"موجودی تتر کافی نیست: {usdt_balance} USDT")
                 return None
 
-            # تقسیم سرمایه (مثلا ۲۰ درصد از موجودی کل برای هر معامله اسپات)
             allocated_budget = usdt_balance * usdt_allocation_percent
             amount_to_buy = allocated_budget / price
 
             logger.info(f"سرمایه تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-            # ارسال سفارش خرید اسپات به صرافی تبدیل
             if side == "BUY":
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
                 logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
                 return order
             elif side == "SELL":
-                # در بازار اسپات، فروش به معنای تبدیل ارز پایه به تتر است
                 base_currency = symbol.split('/')[0]
                 balance = self.exchange.fetch_balance()
                 base_free = balance.get(base_currency, {}).get('free', 0.0)
@@ -337,39 +282,34 @@ class HamraveshTradingSystem:
                     return
 
             latest = df_15m.iloc[-1]
-            ai_result = self.analysis.get_ai_confirmation(symbol, rule_signal, df_15m, trend_4h)
+            price = float(latest['close'])
+            
+            # بررسی موجودی و باز کردن معامله واقعی اسپات در صرافی تبدیل بر اساس تحلیل تکنیکال خالص
+            order_result = self.tabdeal.execute_spot_order(symbol, rule_signal, price)
 
-            if ai_result["confidence"] >= self.config.MIN_CONFIDENCE_AI:
-                price = float(latest['close'])
-                
-                # ۱. بررسی موجودی و باز کردن معامله واقعی اسپات در صرافی تبدیل
-                order_result = self.tabdeal.execute_spot_order(symbol, rule_signal, price)
+            if order_result:
+                payload = {
+                    "action": "new_trade",
+                    "symbol": symbol,
+                    "side": rule_signal,
+                    "price": price,
+                    "trend_4h": trend_4h
+                }
+                self.notifier.send_to_render(payload)
 
-                if order_result:
-                    # ۲. ارسال سیگنال و نتیجه به رندر برای پوشش تلگرام
-                    payload = {
-                        "action": "new_trade",
-                        "symbol": symbol,
-                        "side": rule_signal,
-                        "price": price,
-                        "confidence": ai_result["confidence"],
-                        "trend_4h": trend_4h
-                    }
-                    self.notifier.send_to_render(payload)
-
-                self.last_signal_time[symbol] = now
+            self.last_signal_time[symbol] = now
 
         except Exception as e:
             logger.error(f"خطا در پردازش همروش برای {symbol}: {e}")
 
     def run_once(self):
-        logger.info("----- شروع آنالیز و اجرای همروش -----")
+        logger.info("----- شروع آنالیز و اجرای همروش (بدون هوش مصنوعی) -----")
         for symbol in self.config.SYMBOLS:
             self.process_symbol(symbol)
             time.sleep(1.5)
 
     def start(self):
-        logger.info("بخش همروش بات فعال شد (حالت واقعی - اسپات)")
+        logger.info("بخش همروش بات فعال شد (حالت واقعی - اسپات - خالص تکنیکال)")
         while self.running:
             self.run_once()
             gc.collect()
