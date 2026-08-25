@@ -31,6 +31,15 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         global latest_market_data
         try:
+            # بررسی رمز امنیتی مشترک با رندر
+            auth_token = self.headers.get("X-Secret-Token")
+            expected_token = os.getenv("SECRET_TOKEN", "")
+            
+            if expected_token and auth_token != expected_token:
+                self.send_response(403)
+                self.end_headers()
+                return
+
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
@@ -241,7 +250,9 @@ class RenderNotifier:
             return
         try:
             import requests
-            requests.post(self.config.RENDER_WEBHOOK_URL, json=payload, timeout=10)
+            secret_token = os.getenv("SECRET_TOKEN", "")
+            headers = {"X-Secret-Token": secret_token}
+            requests.post(self.config.RENDER_WEBHOOK_URL, json=payload, headers=headers, timeout=10)
         except Exception as e:
             logger.error(f"خطا در ارسال داده به رندر: {e}")
 
