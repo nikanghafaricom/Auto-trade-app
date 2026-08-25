@@ -1,4 +1,4 @@
-ccxt
+ccxt-ir
 pandas
 requests
 python-dotenv
