@@ -1,5 +1,5 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه نهایی همروش (Hamravesh - Webhook Receiver & Tabdeal Spot)
+# Hybrid Signal Bot - نسخه نهایی همروش (Hamravesh - Webhook Receiver & Tabdeal Spot Updated)
 # ==============================================
 import os
 import time
