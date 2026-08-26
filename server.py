@@ -189,6 +189,7 @@ class TabdealTrader:
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
+        self.active_positions = {}  # ذخیره قیمت ورود برای محاسبه سود و زیان
         
         try:
             self.exchange = ccxt.tabdeal({
@@ -268,8 +269,13 @@ class TabdealTrader:
 
             if side == "BUY":
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
+                # ذخیره قیمت ورود جهت محاسبه سود و زیان زمان فروش
+                self.active_positions[symbol] = {
+                    "entry_price": price
+                }
                 logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
-                return order
+                return {"action": "new_trade", "symbol": symbol, "side": "BUY", "price": price}
+
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 try:
@@ -280,8 +286,22 @@ class TabdealTrader:
                 
                 if base_free > 0:
                     order = self.exchange.create_market_sell_order(symbol, base_free)
-                    logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order}")
-                    return order
+                    
+                    # محاسبه سود یا زیان واقعی
+                    pnl_percent = 0.0
+                    if symbol in self.active_positions:
+                        entry_price = self.active_positions[symbol]["entry_price"]
+                        pnl_percent = ((price - entry_price) / entry_price) * 100
+                        del self.active_positions[symbol]  # پاک کردن از لیست پس از فروش
+
+                    logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order} | سود/زیان: {pnl_percent:.2f}%")
+                    return {
+                        "action": "close_trade",
+                        "symbol": symbol,
+                        "side": "SELL",
+                        "exit_price": price,
+                        "pnl": round(pnl_percent, 2)
+                    }
                 else:
                     logger.warning(f"دارایی کافی از ارز {base_currency} برای فروش موجود نیست.")
                     return None
@@ -341,18 +361,12 @@ class HamraveshTradingSystem:
             latest = df_indicators.iloc[-1]
             price = float(latest['close'])
             
-            # اجرای سفارش اسپات در صرافی تبدیل
+            # اجرای سفارش اسپات در صرافی تبدیل و گرفتن نتیجه (خرید یا فروش همراه با سود/زیان)
             order_result = self.tabdeal.execute_spot_order(symbol, rule_signal, price)
 
             if order_result:
-                payload = {
-                    "action": "new_trade",
-                    "symbol": symbol,
-                    "side": rule_signal,
-                    "price": price,
-                    "trend": trend
-                }
-                self.notifier.send_to_render(payload)
+                order_result["trend"] = trend
+                self.notifier.send_to_render(order_result)
 
             self.last_signal_time[symbol] = now
 
