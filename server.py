@@ -187,6 +187,9 @@ class SignalEngine:
 class TabdealTrader:
     def __init__(self, config: Config):
         self.config = config
+        self.initial_capital = None
+        self.last_capital_reset_time = None
+        
         try:
             self.exchange = ccxt.tabdeal({
                 'apiKey': config.TABDEAL_API_KEY,
@@ -202,14 +205,12 @@ class TabdealTrader:
         if not self.exchange:
             return 0.0
         try:
-            # استفاده از متد سازگار با ccxt-ir یا درخواست مستقیم به پنل صرافی در صورت عدم پشتیبانی fetch_balance
             if hasattr(self.exchange, 'private_get_account_balances') or hasattr(self.exchange, 'fetch_balance'):
                 try:
                     balance = self.exchange.fetch_balance()
                     usdt_free = balance.get('USDT', {}).get('free', 0.0)
                     return float(usdt_free)
                 except Exception:
-                    # روش جایگزین برای صرافی‌های ایرانی متصل از طریق ccxt-ir
                     response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
                     for asset in response.get('data', []):
                         if asset.get('currency') == 'USDT' or asset.get('asset') == 'USDT':
@@ -219,21 +220,51 @@ class TabdealTrader:
             logger.error(f"خطا در دریافت موجودی صرافی تبدیل: {e}")
             return 0.0
 
-    def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.20):
+    def check_and_update_capital(self, current_balance: float):
+        """بررسی و به‌روزرسانی سرمایه پایه هر ۳ ساعت یک‌بار"""
+        now = datetime.now()
+        if self.initial_capital is None or self.last_capital_reset_time is None:
+            self.initial_capital = current_balance
+            self.last_capital_reset_time = now
+            logger.info(f"سرمایه پایه اولیه ثبت شد: {self.initial_capital} USDT")
+        elif now - self.last_capital_reset_time >= timedelta(hours=3):
+            self.initial_capital = current_balance
+            self.last_capital_reset_time = now
+            logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
+
+    def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.25):
         if not self.exchange:
             logger.error("صرافی تبدیل مقداردهی نشده است.")
             return None
 
         try:
             usdt_balance = self.get_usdt_balance()
-            if usdt_balance < 10:
-                logger.warning(f"موجودی تتر کافی نیست: {usdt_balance} USDT (توجه: اگر تست می‌کنید، این هشدار مانع اجرای سفارش نمی‌شود اما برای تست واقعی نیاز به تتر دارید)")
+            
+            # بررسی و اعمال بازنشانی ۳ ساعته سرمایه پایه
+            self.check_and_update_capital(usdt_balance)
 
-            # محاسبه بودجه بر اساس تخصیص یا پیش‌فرض در صورت صفر بودن موجودی تستی
-            allocated_budget = (usdt_balance * usdt_allocation_percent) if usdt_balance >= 10 else 10.0
+            # محاسبه ۲۵ درصد از سرمایه پایه
+            allocated_budget = self.initial_capital * usdt_allocation_percent
+            
+            # حداقل مقدار کف استاندارد صرافی (قابل تنظیم)
+            MIN_REQUIRED_USDT = 1.0  
+
+            # اگر ۲۵٪ محاسبه‌شده کمتر از حد نصاب صرافی بود، بررسی کن آیا کیف پول به اندازه کف صرافی موجودی دارد یا خیر
+            if allocated_budget < MIN_REQUIRED_USDT:
+                if usdt_balance >= MIN_REQUIRED_USDT:
+                    allocated_budget = MIN_REQUIRED_USDT
+                    logger.info(f"بودجه ۲۵ درصدی کمتر از حد نصاب بود؛ بودجه برای رسیدن به کف صرافی به {MIN_REQUIRED_USDT} USDT تنظیم شد.")
+                else:
+                    logger.warning(f"موجودی کیف پول ({usdt_balance} USDT) حتی به حد نصاب صرافی ({MIN_REQUIRED_USDT} USDT) نمی‌رسد. معامله رد شد.")
+                    return None
+
+            # بررسی نهایی برای اطمینان از کفایت موجودی کل کیف پول برای این معامله
+            if usdt_balance < allocated_budget:
+                logger.warning(f"موجودی کل کافی نیست. موجودی فعلی: {usdt_balance} USDT، بودجه مورد نیاز: {allocated_budget} USDT. معامله رد شد.")
+                return None
+
             amount_to_buy = allocated_budget / price
-
-            logger.info(f"سرمایه تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
+            logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
             if side == "BUY":
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
@@ -245,12 +276,15 @@ class TabdealTrader:
                     balance = self.exchange.fetch_balance()
                     base_free = balance.get(base_currency, {}).get('free', 0.0)
                 except Exception:
-                    base_free = 1.0 # مقدار پیش‌فرض برای جلوگیری از توقف در صورت خطای ساختار موجودی
+                    base_free = 0.0
                 
                 if base_free > 0:
                     order = self.exchange.create_market_sell_order(symbol, base_free)
                     logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order}")
                     return order
+                else:
+                    logger.warning(f"دارایی کافی از ارز {base_currency} برای فروش موجود نیست.")
+                    return None
                 
         except Exception as e:
             logger.error(f"خطا در اجرای سفارش واقعی در صرافی تبدیل برای {symbol}: {e}")
