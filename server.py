@@ -233,7 +233,7 @@ class TabdealTrader:
             self.last_capital_reset_time = now
             logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
 
-    def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.25):
+    def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.50):
         if not self.exchange:
             logger.error("صرافی تبدیل مقداردهی نشده است.")
             return None
@@ -244,17 +244,17 @@ class TabdealTrader:
             # بررسی و اعمال بازنشانی ۳ ساعته سرمایه پایه
             self.check_and_update_capital(usdt_balance)
 
-            # محاسبه ۲۵ درصد از سرمایه پایه
+            # محاسبه ۵۰ درصد از سرمایه پایه
             allocated_budget = self.initial_capital * usdt_allocation_percent
             
             # حداقل مقدار کف استاندارد صرافی (قابل تنظیم)
             MIN_REQUIRED_USDT = 1.0  
 
-            # اگر ۲۵٪ محاسبه‌شده کمتر از حد نصاب صرافی بود، بررسی کن آیا کیف پول به اندازه کف صرافی موجودی دارد یا خیر
+            # اگر ۵۰٪ محاسبه‌شده کمتر از حد نصاب صرافی بود، بررسی کن آیا کیف پول به اندازه کف صرافی موجودی دارد یا خیر
             if allocated_budget < MIN_REQUIRED_USDT:
                 if usdt_balance >= MIN_REQUIRED_USDT:
                     allocated_budget = MIN_REQUIRED_USDT
-                    logger.info(f"بودجه ۲۵ درصدی کمتر از حد نصاب بود؛ بودجه برای رسیدن به کف صرافی به {MIN_REQUIRED_USDT} USDT تنظیم شد.")
+                    logger.info(f"بودجه ۵۰ درصدی کمتر از حد نصاب بود؛ بودجه برای رسیدن به کف صرافی به {MIN_REQUIRED_USDT} USDT تنظیم شد.")
                 else:
                     logger.warning(f"موجودی کیف پول ({usdt_balance} USDT) حتی به حد نصاب صرافی ({MIN_REQUIRED_USDT} USDT) نمی‌رسد. معامله رد شد.")
                     return None
