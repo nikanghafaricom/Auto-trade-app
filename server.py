@@ -1,5 +1,5 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه نهایی همروش (Hamravesh - Webhook Receiver & Tabdeal Spot Updated)
+# Hybrid Signal Bot - نسخه همروش (Hamravesh - Webhook Receiver & Tabdeal Spot Execution)
 # ==============================================
 import os
 import time
@@ -10,17 +10,13 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
-import pandas as pd
 import ccxt
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Global variable to store incoming data from Render
-latest_market_data = {}
-data_lock = threading.Lock()
-
-# ==================== لاگ (اول تعریف می‌شود تا توابع دیگر به آن دسترسی داشته باشند) ====================
+# ==================== لاگ ====================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -31,157 +27,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== وب‌سرور و دریافت وب‌هوک از رندر ====================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"Hamravesh Bot is alive and running!")
-
-    def do_POST(self):
-        global latest_market_data
-        try:
-            # بررسی رمز امنیتی مشترک با رندر
-            auth_token = self.headers.get("X-Secret-Token")
-            expected_token = os.getenv("SECRET_TOKEN", "")
-            
-            if expected_token and auth_token != expected_token:
-                self.send_response(403)
-                self.end_headers()
-                return
-
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            
-            symbol = data.get("symbol")
-            if symbol:
-                with data_lock:
-                    latest_market_data[symbol] = data.get("ohlcv")
-                
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "success", "message": "Data received"}).encode('utf-8'))
-            else:
-                self.send_response(400)
-                self.end_headers()
-        except Exception as e:
-            logger.error(f"خطا در پردازش وب‌هوک دریافتی از رندر: {e}")
-            self.send_response(500)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-def start_health_check_server():
-    # اصلاح پورت برای سازگاری کامل با همروش و رفع ارور Not Ready
-    port = int(os.environ.get("PORT", 8080))
-    try:
-        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-        logger.info(f"وب‌سرور همروش روی پورت {port} آغاز به کار کرد.")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"خطا در اجرای وب‌سرور: {e}")
-
-threading.Thread(target=start_health_check_server, daemon=True).start()
-
 # ==================== تنظیمات ====================
 class Config:
     TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
     TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
-
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
-
-    SYMBOLS = [
-        "BTC/USDT",
-        "ETH/USDT",
-        "SOL/USDT",
-        "BNB/USDT",
-        "XRP/USDT",
-        "AVAX/USDT",
-        "NEAR/USDT",
-        "ADA/USDT",
-        "DOGE/USDT",
-        "LINK/USDT",
-    ]
-
-    ENTRY_TIMEFRAME = "15m"
-    TREND_TIMEFRAME = "4h"
-    CHECK_INTERVAL = 300
+    SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
     def validate(self):
         pass
-
-# ==================== لایه تحلیل تکنیکال ====================
-class AnalysisLayer:
-    def __init__(self, config: Config):
-        self.config = config
-
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-
-        df['ema_fast'] = df['close'].ewm(span=20, adjust=False).mean()
-        df['ema_slow'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['ema_trend'] = df['close'].ewm(span=200, adjust=False).mean()
-
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['atr'] = tr.rolling(window=14).mean()
-
-        df['vol_sma'] = df['volume'].rolling(window=20).mean()
-        df['support'] = df['low'].rolling(window=15).min()
-        df['resistance'] = df['high'].rolling(window=15).max()
-
-        return df
-
-    def get_major_trend(self, df_trend: pd.DataFrame) -> str:
-        latest = df_trend.iloc[-1]
-        if latest['close'] > latest['ema_trend'] and latest['ema_fast'] > latest['ema_slow']:
-            return "BULLISH"
-        elif latest['close'] < latest['ema_trend'] and latest['ema_fast'] < latest['ema_slow']:
-            return "BEARISH"
-        return "NEUTRAL"
-
-# ==================== موتور سیگنال ====================
-class SignalEngine:
-    def __init__(self, config: Config):
-        self.config = config
-
-    def get_rule_signal(self, df_15m: pd.DataFrame, trend_4h: str) -> Optional[str]:
-        latest = df_15m.iloc[-1]
-        prev = df_15m.iloc[-2]
-        
-        if pd.isna(latest['rsi']) or pd.isna(latest['ema_fast']) or pd.isna(latest['atr']):
-            return None
-
-        if latest['atr'] < (latest['close'] * 0.0015):
-            return None
-
-        volume_confirmed = latest['volume'] > (latest['vol_sma'] * 0.50)
-
-        if trend_4h in ["BULLISH", "NEUTRAL"]:
-            ema_bull = latest['ema_fast'] > latest['ema_slow']
-            rsi_buy = (latest['rsi'] > 42 and prev['rsi'] <= 42) or (48 <= latest['rsi'] <= 65 and latest['rsi'] > prev['rsi'])
-            if ema_bull and rsi_buy and volume_confirmed:
-                return "BUY"
-
-        if trend_4h in ["BEARISH", "NEUTRAL"]:
-            ema_bear = latest['ema_fast'] < latest['ema_slow']
-            rsi_sell = (latest['rsi'] < 58 and prev['rsi'] >= 58) or (35 <= latest['rsi'] <= 52 and latest['rsi'] < prev['rsi'])
-            if ema_bear and rsi_sell and volume_confirmed:
-                return "SELL"
-
-        return None
 
 # ==================== مدیریت معاملات واقعی در صرافی تبدیل (Spot بدون اهرم) ====================
 class TabdealTrader:
@@ -240,28 +94,20 @@ class TabdealTrader:
 
         try:
             usdt_balance = self.get_usdt_balance()
-            
-            # بررسی و اعمال بازنشانی ۳ ساعته سرمایه پایه
             self.check_and_update_capital(usdt_balance)
 
-            # محاسبه ۵۰ درصد از سرمایه پایه
             allocated_budget = self.initial_capital * usdt_allocation_percent
-            
-            # حداقل مقدار کف استاندارد صرافی (قابل تنظیم)
             MIN_REQUIRED_USDT = 1.0  
 
-            # اگر ۵۰٪ محاسبه‌شده کمتر از حد نصاب صرافی بود، بررسی کن آیا کیف پول به اندازه کف صرافی موجودی دارد یا خیر
             if allocated_budget < MIN_REQUIRED_USDT:
                 if usdt_balance >= MIN_REQUIRED_USDT:
                     allocated_budget = MIN_REQUIRED_USDT
-                    logger.info(f"بودجه ۵۰ درصدی کمتر از حد نصاب بود؛ بودجه برای رسیدن به کف صرافی به {MIN_REQUIRED_USDT} USDT تنظیم شد.")
                 else:
-                    logger.warning(f"موجودی کیف پول ({usdt_balance} USDT) حتی به حد نصاب صرافی ({MIN_REQUIRED_USDT} USDT) نمی‌رسد. معامله رد شد.")
+                    logger.warning(f"موجودی کیف پول کافی نیست. معامله رد شد.")
                     return None
 
-            # بررسی نهایی برای اطمینان از کفایت موجودی کل کیف پول برای این معامله
             if usdt_balance < allocated_budget:
-                logger.warning(f"موجودی کل کافی نیست. موجودی فعلی: {usdt_balance} USDT، بودجه مورد نیاز: {allocated_budget} USDT. معامله رد شد.")
+                logger.warning(f"موجودی کل کافی نیست. معامله رد شد.")
                 return None
 
             amount_to_buy = allocated_budget / price
@@ -269,12 +115,12 @@ class TabdealTrader:
 
             if side == "BUY":
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
-                # ذخیره قیمت ورود جهت محاسبه سود و زیان زمان فروش
                 self.active_positions[symbol] = {
                     "entry_price": price
                 }
                 logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
-                return {"action": "new_trade", "symbol": symbol, "side": "BUY", "price": price}
+                # در خرید اسپات، چون معامله باز شده، نتیجه نهایی سود/زیان در این مرحله بسته نمی‌شود (ثبت ورود انجام شده)
+                return None
 
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
@@ -287,12 +133,11 @@ class TabdealTrader:
                 if base_free > 0:
                     order = self.exchange.create_market_sell_order(symbol, base_free)
                     
-                    # محاسبه سود یا زیان واقعی
                     pnl_percent = 0.0
                     if symbol in self.active_positions:
                         entry_price = self.active_positions[symbol]["entry_price"]
                         pnl_percent = ((price - entry_price) / entry_price) * 100
-                        del self.active_positions[symbol]  # پاک کردن از لیست پس از فروش
+                        del self.active_positions[symbol]
 
                     logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order} | سود/زیان: {pnl_percent:.2f}%")
                     return {
@@ -310,7 +155,7 @@ class TabdealTrader:
             logger.error(f"خطا در اجرای سفارش واقعی در صرافی تبدیل برای {symbol}: {e}")
             return None
 
-# ==================== ارتباط با رندر (جهت ارسال به تلگرام) ====================
+# ==================== ارتباط با رندر (جهت ارسال نتیجه معامله) ====================
 class RenderNotifier:
     def __init__(self, config: Config):
         self.config = config
@@ -319,79 +164,86 @@ class RenderNotifier:
         if not self.config.RENDER_WEBHOOK_URL:
             return
         try:
-            import requests
-            secret_token = os.getenv("SECRET_TOKEN", "")
+            secret_token = self.config.SECRET_TOKEN
             headers = {"X-Secret-Token": secret_token}
             requests.post(self.config.RENDER_WEBHOOK_URL, json=payload, headers=headers, timeout=10)
         except Exception as e:
             logger.error(f"خطا در ارسال داده به رندر: {e}")
 
-# ==================== سیستم اصلی همروش ====================
-class HamraveshTradingSystem:
-    def __init__(self):
-        self.config = Config()
-        self.config.validate()
-        self.analysis = AnalysisLayer(self.config)
-        self.signal_engine = SignalEngine(self.config)
-        self.tabdeal = TabdealTrader(self.config)
-        self.notifier = RenderNotifier(self.config)
-        self.running = True
-        self.last_signal_time: Dict[str, datetime] = {}
+# ==================== وب‌سرور و دریافت دستور از رندر ====================
+class HamraveshWebhookHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Hamravesh Bot is alive and running!")
 
-    def process_symbol_from_webhook(self, symbol: str, ohlcv_data: list):
+    def do_POST(self):
         try:
-            if not ohlcv_data or len(ohlcv_data) < 50:
+            auth_token = self.headers.get("X-Secret-Token")
+            config = Config()
+            
+            if config.SECRET_TOKEN and auth_token != config.SECRET_TOKEN:
+                self.send_response(403)
+                self.end_headers()
                 return
 
-            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
             
-            df_indicators = self.analysis.calculate_indicators(df)
-            trend = self.analysis.get_major_trend(df_indicators)
+            action = data.get("action")
 
-            rule_signal = self.signal_engine.get_rule_signal(df_indicators, trend)
-            if not rule_signal:
+            # پاسخ به پینگ تستی رندر برای بررسی سلامت چرخه
+            if action == "ping":
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "pong"}).encode('utf-8'))
                 return
 
-            now = datetime.now()
-            if symbol in self.last_signal_time:
-                if now - self.last_signal_time[symbol] < timedelta(minutes=90):
-                    return
+            # دریافت دستور معامله از رندر و اجرا در صرافی تبدیل
+            if action == "execute_trade":
+                symbol = data.get("symbol")
+                side = data.get("side")
+                price = data.get("price")
+                
+                trader = TabdealTrader(config)
+                trade_result = trader.execute_spot_order(symbol, side, price)
 
-            latest = df_indicators.iloc[-1]
-            price = float(latest['close'])
-            
-            # اجرای سفارش اسپات در صرافی تبدیل و گرفتن نتیجه (خرید یا فروش همراه با سود/زیان)
-            order_result = self.tabdeal.execute_spot_order(symbol, rule_signal, price)
+                # اگر معامله بسته شد و نتیجه سود/زیان داشت، به رندر برگردانده شود
+                if trade_result:
+                    notifier = RenderNotifier(config)
+                    notifier.send_to_render(trade_result)
 
-            if order_result:
-                order_result["trend"] = trend
-                self.notifier.send_to_render(order_result)
-
-            self.last_signal_time[symbol] = now
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "success", "message": "Processed"}).encode('utf-8'))
 
         except Exception as e:
-            logger.error(f"خطا در پردازش داده وب‌هوک برای {symbol}: {e}")
+            logger.error(f"خطا در پردازش وب‌هوک دریافتی در همروش: {e}")
+            self.send_response(500)
+            self.end_headers()
 
-    def start(self):
-        logger.info("بخش همروش بات فعال شد (منتظر دریافت داده از رندر - اسپات واقعی)")
-        while self.running:
-            with data_lock:
-                current_data = dict(latest_market_data)
-            
-            for symbol, ohlcv in current_data.items():
-                self.process_symbol_from_webhook(symbol, ohlcv)
+    def log_message(self, format, *args):
+        return
 
-            gc.collect()
-            time.sleep(10)
+def start_hamravesh_server():
+    port = int(os.environ.get("PORT", 8080))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HamraveshWebhookHandler)
+        logger.info(f"وب‌سرور همروش روی پورت {port} آغاز به کار کرد.")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"خطا در اجرای وب‌سرور همروش: {e}")
 
-    def stop(self):
-        self.running = False
-        logger.info("بخش همروش متوقف شد")
+threading.Thread(target=start_hamravesh_server, daemon=True).start()
 
 if __name__ == "__main__":
-    bot = HamraveshTradingSystem()
+    logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
     try:
-        bot.start()
+        while True:
+            time.sleep(60)
     except KeyboardInterrupt:
-        bot.stop()
+        logger.info("بخش همروش متوقف شد.")
