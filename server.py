@@ -60,17 +60,17 @@ class TabdealTrader:
         if not self.exchange:
             return 0.0
         try:
-            if hasattr(self.exchange, 'private_get_account_balances') or hasattr(self.exchange, 'fetch_balance'):
-                try:
-                    balance = self.exchange.fetch_balance()
-                    usdt_free = balance.get('USDT', {}).get('free', 0.0)
-                    return float(usdt_free)
-                except Exception:
-                    response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
-                    for asset in response.get('data', []):
-                        if asset.get('currency') == 'USDT' or asset.get('asset') == 'USDT':
-                            return float(asset.get('free', asset.get('balance', 0.0)))
-            return 0.0
+            balance = self.exchange.fetch_balance()
+            logger.info(f"پاسخ کامل موجودی صرافی: {balance}")
+            
+            usdt_data = balance.get('USDT', {})
+            usdt_free = usdt_data.get('free', 0.0) if isinstance(usdt_data, dict) else 0.0
+            
+            if usdt_free == 0.0 and isinstance(balance.get('free'), dict):
+                usdt_free = balance.get('free', {}).get('USDT', 0.0)
+                
+            logger.info(f"موجودی تتر شناسایی شده: {usdt_free}")
+            return float(usdt_free)
         except Exception as e:
             logger.error(f"خطا در دریافت موجودی صرافی تبدیل: {e}")
             return 0.0
