@@ -53,8 +53,10 @@ class TabdealTrader:
         logger.info("دیاگ: در حال پیدا کردن مسیر صحیح API صرافی تبدیل...")
         
         candidate_urls = [
+            "https://api.tabdeal.org/api/v1/account/balance",
+            "https://api.tabdeal.org/api/v1/wallets",
             "https://api.tabdeal.org/api/v1/account/balances",
-            "https://api.tabdeal.org/v1/account/balances",
+            "https://api.tabdeal.org/v1/account/balance",
             "https://api.tabdeal.org/api/v1/wallet/balance",
             "https://api.tabdeal.org/api/v1/assets",
             "https://api.tabdeal.org/r/api/v1/account/balances"
@@ -93,7 +95,6 @@ class TabdealTrader:
 
     def get_usdt_balance(self) -> float:
         if not self.working_balance_url:
-            # اگر آدرس معتبری ذخیره نشده، یک‌بار دیگر تست کن
             self.run_connection_diagnostic()
             if not self.working_balance_url:
                 return 0.0
@@ -158,7 +159,6 @@ class TabdealTrader:
             amount_to_buy = allocated_budget / price
             logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-            # ثبت سفارش خرید/فروش از طریق درخواست مستقیم به صرافی تبدیل
             headers = {
                 "X-API-Key": self.config.TABDEAL_API_KEY,
                 "X-API-Secret": self.config.TABDEAL_SECRET,
@@ -166,17 +166,6 @@ class TabdealTrader:
             }
 
             if side == "BUY":
-                # ساختار ثبت سفارش خرید اسپات در تبدیل
-                order_url = "https://api.tabdeal.org/api/v1/order" # یا مسیر استاندارد ثبت سفارش
-                payload = {
-                    "symbol": symbol.replace('/', '').lower(),
-                    "side": "buy",
-                    "type": "market",
-                    "amount": amount_to_buy
-                }
-                logger.info(f"ارسال درخواست خرید برای {symbol} با حجم {amount_to_buy}")
-                # res = requests.post(order_url, json=payload, headers=headers, timeout=10)
-                
                 self.active_positions[symbol] = {
                     "entry_price": price
                 }
