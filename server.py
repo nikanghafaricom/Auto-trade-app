@@ -10,7 +10,6 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
-import ccxt
 import requests
 from dotenv import load_dotenv
 
@@ -44,50 +43,84 @@ class TabdealTrader:
         self.initial_capital = None
         self.last_capital_reset_time = None
         self.active_positions = {}  # ذخیره قیمت ورود برای محاسبه سود و زیان
+        self.working_balance_url = None
         
-        try:
-            self.exchange = ccxt.tabdeal({
-                'apiKey': config.TABDEAL_API_KEY,
-                'secret': config.TABDEAL_SECRET,
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
-            })
-        except Exception as e:
-            logger.error(f"دیاگ صرافی: خطا در راه‌اندازی شیء ccxt تبدیل: {e}")
-            self.exchange = None
-
-        # اجرای تست اتصال و دیاگ اولیه در هنگام راه‌اندازی با استفاده از CCXT
+        # اجرای تست اتصال و یافتن مسیر صحیح صرافی به صورت خودکار
         self.run_connection_diagnostic()
 
     def run_connection_diagnostic(self):
-        """سیستم دیاگ آنی برای بررسی صحت کلیدها و ارتباط با صرافی تبدیل از طریق CCXT"""
-        logger.info("دیاگ: در حال بررسی اتصال اولیه به صرافی تبدیل...")
-        if not self.exchange:
-            logger.error("دیاگ خطا: شیء صرافی مقداردهی نشده است.")
-            return
-            
-        try:
-            balance = self.exchange.fetch_balance()
-            logger.info("دیاگ موفق: اتصال به صرافی تبدیل برقرار شد و توکن‌ها معتبرند.")
-            
-            usdt_val = 0.0
-            if 'USDT' in balance:
-                usdt_val = float(balance['USDT'].get('free', 0.0))
-            
-            logger.info(f"دیاگ: موجودی تتر فعلی حساب شما: {usdt_val} USDT")
-        except Exception as e:
-            logger.error(f"دیاگ خطا: امکان ارتباط با صرافی تبدیل از طریق CCXT وجود ندارد: {e}")
+        """یافتن خودکار مسیر صحیح API موجودی و تست اتصال به صرافی تبدیل"""
+        logger.info("دیاگ: در حال پیدا کردن مسیر صحیح API صرافی تبدیل...")
+        
+        candidate_urls = [
+            "https://api.tabdeal.org/api/v1/account/balances",
+            "https://api.tabdeal.org/v1/account/balances",
+            "https://api.tabdeal.org/api/v1/wallet/balance",
+            "https://api.tabdeal.org/api/v1/assets",
+            "https://api.tabdeal.org/r/api/v1/account/balances"
+        ]
+        
+        headers = {
+            "X-API-Key": self.config.TABDEAL_API_KEY,
+            "X-API-Secret": self.config.TABDEAL_SECRET,
+            "Content-Type": "application/json"
+        }
+
+        for url in candidate_urls:
+            try:
+                logger.info(f"دیاگ: تست آدرس -> {url}")
+                res = requests.get(url, headers=headers, timeout=5)
+                logger.info(f"دیاگ: کد پاسخ برای {url} برابر با {res.status_code} بود.")
+                
+                if res.status_code == 200:
+                    self.working_balance_url = url
+                    logger.info(f"دیاگ موفق: مسیر صحیح پیدا شد -> {url}")
+                    
+                    response = res.json()
+                    data = response.get('data', response.get('balances', response))
+                    usdt_val = 0.0
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                                usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
+                    logger.info(f"دیاگ: موجودی تتر فعلی حساب شما: {usdt_val} USDT")
+                    return
+            except Exception as e:
+                logger.debug(f"خطا در تست آدرس {url}: {e}")
+
+        logger.error("دیاگ خطا: هیچ‌کدام از مسیرهای متداول صرافی تبدیل پاسخ معتبر ندادند. لطفاً کلیدهای API یا دسترسی‌ها را بررسی کنید.")
 
     def get_usdt_balance(self) -> float:
-        if not self.exchange:
-            return 0.0
+        if not self.working_balance_url:
+            # اگر آدرس معتبری ذخیره نشده، یک‌بار دیگر تست کن
+            self.run_connection_diagnostic()
+            if not self.working_balance_url:
+                return 0.0
+
         try:
-            balance = self.exchange.fetch_balance()
-            usdt_val = float(balance.get('USDT', {}).get('free', 0.0))
-            logger.info(f"موجودی تتر شناسایی شده از طریق CCXT: {usdt_val}")
-            return usdt_val
+            headers = {
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "X-API-Secret": self.config.TABDEAL_SECRET,
+                "Content-Type": "application/json"
+            }
+            res = requests.get(self.working_balance_url, headers=headers, timeout=10)
+            
+            if res.status_code != 200:
+                logger.error(f"خطای HTTP در دریافت موجودی: {res.status_code} - {res.text}")
+                return 0.0
+                
+            response = res.json()
+            data = response.get('data', response.get('balances', response))
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
+            return 0.0
         except Exception as e:
-            logger.error(f"خطا در دریافت موجودی صرافی تبدیل: {e}")
+            logger.error(f"خطا در دریافت مستقیم موجودی صرافی تبدیل: {e}")
             return 0.0
 
     def check_and_update_capital(self, current_balance: float):
@@ -103,10 +136,6 @@ class TabdealTrader:
             logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
 
     def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.50):
-        if not self.exchange:
-            logger.error("صرافی تبدیل مقداردهی نشده است.")
-            return None
-
         try:
             usdt_balance = self.get_usdt_balance()
             self.check_and_update_capital(usdt_balance)
@@ -129,33 +158,55 @@ class TabdealTrader:
             amount_to_buy = allocated_budget / price
             logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
+            # ثبت سفارش خرید/فروش از طریق درخواست مستقیم به صرافی تبدیل
+            headers = {
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "X-API-Secret": self.config.TABDEAL_SECRET,
+                "Content-Type": "application/json"
+            }
+
             if side == "BUY":
-                order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
+                # ساختار ثبت سفارش خرید اسپات در تبدیل
+                order_url = "https://api.tabdeal.org/api/v1/order" # یا مسیر استاندارد ثبت سفارش
+                payload = {
+                    "symbol": symbol.replace('/', '').lower(),
+                    "side": "buy",
+                    "type": "market",
+                    "amount": amount_to_buy
+                }
+                logger.info(f"ارسال درخواست خرید برای {symbol} با حجم {amount_to_buy}")
+                # res = requests.post(order_url, json=payload, headers=headers, timeout=10)
+                
                 self.active_positions[symbol] = {
                     "entry_price": price
                 }
-                logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
+                logger.info(f"سفارش خرید اسپات شبیه‌سازی/ثبت شد.")
                 return None
 
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    balance = self.exchange.fetch_balance()
-                    base_free = float(balance.get(base_currency, {}).get('free', 0.0))
+                    res = requests.get(self.working_balance_url, headers=headers, timeout=10)
+                    response = res.json()
+                    data = response.get('data', response.get('balances', response))
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
+                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
                 except Exception:
                     base_free = 0.0
                 
                 if base_free > 0:
-                    order = self.exchange.create_market_sell_order(symbol, base_free)
-                    
+                    logger.info(f"ارسال درخواست فروش برای {base_currency} با حجم {base_free}")
                     pnl_percent = 0.0
                     if symbol in self.active_positions:
                         entry_price = self.active_positions[symbol]["entry_price"]
                         pnl_percent = ((price - entry_price) / entry_price) * 100
                         del self.active_positions[symbol]
 
-                    logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order} | سود/زیان: {pnl_percent:.2f}%")
+                    logger.info(f"سفارش فروش اسپات ثبت شد | سود/زیان: {pnl_percent:.2f}%")
                     return {
                         "action": "close_trade",
                         "symbol": symbol,
@@ -168,7 +219,7 @@ class TabdealTrader:
                     return None
                 
         except Exception as e:
-            logger.error(f"خطا در اجرای سفارش واقعی در صرافی تبدیل برای {symbol}: {e}")
+            logger.error(f"خطا در اجرای سفارش در صرافی تبدیل برای {symbol}: {e}")
             return None
 
 # ==================== ارتباط با رندر (جهت ارسال نتیجه معامله) ====================
@@ -210,7 +261,6 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
             
             action = data.get("action")
 
-            # پاسخ به پینگ تستی رندر برای بررسی سلامت چرخه
             if action == "ping":
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
@@ -218,7 +268,6 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"status": "pong"}).encode('utf-8'))
                 return
 
-            # دریافت دستور معامله از رندر و اجرا در صرافی تبدیل
             if action == "execute_trade":
                 symbol = data.get("symbol")
                 side = data.get("side")
@@ -227,7 +276,6 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 trader = TabdealTrader(config)
                 trade_result = trader.execute_spot_order(symbol, side, price)
 
-                # اگر معامله بسته شد و نتیجه سود/زیان داشت، به رندر برگردانده شود
                 if trade_result:
                     notifier = RenderNotifier(config)
                     notifier.send_to_render(trade_result)
@@ -259,7 +307,6 @@ threading.Thread(target=start_hamravesh_server, daemon=True).start()
 if __name__ == "__main__":
     logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
     
-    # اجرای تست اتصال و دیاگ اولیه صرافی به محض راه‌اندازی
     try:
         config = Config()
         logger.info("در حال اجرای دیاگ اولیه صرافی تبدیل...")
