@@ -5,6 +5,8 @@ import os
 import time
 import logging
 import json
+import hmac
+import hashlib
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
@@ -40,20 +42,31 @@ class TabdealTrader:
         self.active_positions = {}  
         logger.info("ماژول صرافی تبدیل با موفقیت فعال شد.")
 
+    def _generate_signature(self, query_string: str) -> str:
+        """تولید امضای امنیتی با HmacSHA256 بر اساس استانداردهای صرافی تبدیل"""
+        secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
+        message_bytes = query_string.encode('utf-8')
+        return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
+
     def get_usdt_balance(self) -> float:
-        """دریافت موجودی واقعی تتر از صرافی تبدیل با هدرهای استاندارد صرافی"""
+        """دریافت موجودی واقعی تتر با امضای امنیتی صرافی تبدیل"""
         url = "https://api1.tabdeal.org/api/v1/account"
         
-        # اصلاح هدرهای احراز هویت مطابق با استانداردهای صرافی‌های ایرانی و مستندات تبدیل
+        timestamp = str(int(time.time() * 1000))
+        query_string = f"timestamp={timestamp}"
+        signature = self._generate_signature(query_string)
+        
         headers = {
-            "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-            "api-key": self.config.TABDEAL_API_KEY,
+            "X-API-Key": self.config.TABDEAL_API_KEY,
+            "Signature": signature,
             "Content-Type": "application/json"
         }
+        
+        full_url = f"{url}?{query_string}"
 
         try:
-            res = requests.get(url, headers=headers, timeout=10)
-            logger.info(f"درخواست به مسیر موجودی - کد پاسخ: {res.status_code} - متن: {res.text[:150]}")
+            res = requests.get(full_url, headers=headers, timeout=10)
+            logger.info(f"درخواست موجودی با امضا - کد پاسخ: {res.status_code} - متن: {res.text[:200]}")
             
             if res.status_code == 200:
                 data = res.json()
@@ -65,8 +78,8 @@ class TabdealTrader:
                             balance = float(asset.get('free', asset.get('balance', 0.0)))
                             logger.info(f"موجودی واقعی تتر دریافت شد: {balance} USDT")
                             return balance
-            elif res.status_code == 401:
-                logger.error("خطای 401: کلید API یا Secret Key نامعتبر است یا دسترسی به حساب را ندارید.")
+            else:
+                logger.error(f"خطای صرافی در دریافت موجودی: {res.text}")
         except Exception as e:
             logger.error(f"خطا در ارتباط با سرور تبدیل: {e}")
 
@@ -100,34 +113,34 @@ class TabdealTrader:
             logger.info(f"ارسال سفارش به صرافی برای {formatted_symbol} | حجم: {amount_to_buy}")
 
             order_url = "https://api1.tabdeal.org/api/v1/order"
+            timestamp = str(int(time.time() * 1000))
+            
+            # بدنه درخواست و امضای آن برای ثبت سفارش
+            payload_data = {
+                "symbol": formatted_symbol,
+                "side": side.lower(),
+                "type": "market",
+                "timestamp": timestamp
+            }
+            if side.upper() == "BUY":
+                payload_data["quantity"] = round(amount_to_buy, 6)
+
+            query_string = f"symbol={formatted_symbol}&side={side.lower()}&type=market&timestamp={timestamp}"
+            signature = self._generate_signature(query_string)
+
             headers = {
-                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                "api-key": self.config.TABDEAL_API_KEY,
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "Signature": signature,
                 "Content-Type": "application/json"
             }
 
-            if side == "BUY":
-                payload = {
-                    "symbol": formatted_symbol,
-                    "side": "buy",
-                    "type": "market",
-                    "quantity": round(amount_to_buy, 6)
-                }
-                res = requests.post(order_url, json=payload, headers=headers, timeout=10)
-                logger.info(f"پاسخ ثبت سفارش خرید از صرافی تبدیل: {res.status_code} - {res.text}")
-                
+            res = requests.post(order_url, json=payload_data, headers=headers, timeout=10)
+            logger.info(f"پاسخ ثبت سفارش از صرافی تبدیل: {res.status_code} - {res.text}")
+
+            if side.upper() == "BUY":
                 self.active_positions[symbol] = {"entry_price": price}
                 return None
-
-            elif side == "SELL":
-                payload = {
-                    "symbol": formatted_symbol,
-                    "side": "sell",
-                    "type": "market"
-                }
-                res = requests.post(order_url, json=payload, headers=headers, timeout=10)
-                logger.info(f"پاسخ ثبت سفارش فروش از صرافی تبدیل: {res.status_code} - {res.text}")
-
+            elif side.upper() == "SELL":
                 pnl_percent = 0.0
                 if symbol in self.active_positions:
                     entry_price = self.active_positions[symbol]["entry_price"]
@@ -166,7 +179,7 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Hamravesh Bot is active with Tabdeal Integration!")
+        self.wfile.write(b"Hamravesh Bot is active with Signed Tabdeal API!")
 
     def do_POST(self):
         try:
@@ -222,7 +235,7 @@ def start_hamravesh_server():
 threading.Thread(target=start_hamravesh_server, daemon=True).start()
 
 if __name__ == "__main__":
-    logger.info("سرویس همروش استارت شد.")
+    logger.info("سرویس همروش با قابلیت امضای دیجیتال استارت شد.")
     try:
         config = Config()
         trader = TabdealTrader(config)
