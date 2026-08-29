@@ -60,13 +60,24 @@ class TabdealTrader:
         if not self.exchange:
             return 0.0
         try:
-            response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
+            response = {}
+            if hasattr(self.exchange, 'private_get_account_balances'):
+                try:
+                    response = self.exchange.private_get_account_balances()
+                except Exception:
+                    pass
+            if not response and hasattr(self.exchange, 'private_get'):
+                try:
+                    response = self.exchange.private_get('account/balances', {})
+                except Exception:
+                    pass
+            
             logger.info(f"پاسخ خام صرافی تبدیل: {response}")
             
-            data = response.get('data', [])
+            data = response.get('data', response.get('balances', []))
             if isinstance(data, list):
                 for asset in data:
-                    if asset.get('currency') == 'USDT' or asset.get('asset') == 'USDT' or asset.get('symbol') == 'USDT':
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT' or asset.get('symbol', '').upper() == 'USDT':
                         usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
                         logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
                         return usdt_val
@@ -125,12 +136,23 @@ class TabdealTrader:
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 try:
-                    response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
-                    data = response.get('data', [])
+                    response = {}
+                    if hasattr(self.exchange, 'private_get_account_balances'):
+                        try:
+                            response = self.exchange.private_get_account_balances()
+                        except Exception:
+                            pass
+                    if not response and hasattr(self.exchange, 'private_get'):
+                        try:
+                            response = self.exchange.private_get('account/balances', {})
+                        except Exception:
+                            pass
+
+                    data = response.get('data', response.get('balances', []))
                     base_free = 0.0
                     if isinstance(data, list):
                         for asset in data:
-                            if asset.get('currency') == base_currency or asset.get('asset') == base_currency or asset.get('symbol') == base_currency:
+                            if asset.get('currency', '').upper() == base_currency or asset.get('asset', '').upper() == base_currency or asset.get('symbol', '').upper() == base_currency:
                                 base_free = float(asset.get('free', asset.get('balance', 0.0)))
                                 break
                 except Exception:
