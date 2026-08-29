@@ -286,6 +286,11 @@ threading.Thread(target=start_hamravesh_server, daemon=True).start()
 if __name__ == "__main__":
     logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
     try:
+        # دیاگ لحظه‌ای موجودی در همان ثانیه اول استارت
+        config = Config()
+        trader = TabdealTrader(config)
+        trader.get_usdt_balance()
+
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
