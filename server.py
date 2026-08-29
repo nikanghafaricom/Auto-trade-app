@@ -31,75 +31,19 @@ class Config:
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
     SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
-# ==================== مدیریت معاملات واقعی در صرافی تبدیل (Spot بدون اهرم) ====================
+# ==================== مدیریت معاملات واقعی در صرافی تبدیل ====================
 class TabdealTrader:
     def __init__(self, config: Config):
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
         self.active_positions = {}  
-        self.working_balance_url = None
-        
-        self.run_connection_diagnostic()
-
-    def run_connection_diagnostic(self):
-        """یافتن مسیر صحیح موجودی با تست جامع‌تر هدرها"""
-        logger.info("دیاگ: در حال تست اتصال و دریافت موجودی واقعی از صرافی تبدیل...")
-        
-        # مسیرهای احتمالی کیف پول و موجودی در صرافی‌های ایرانی
-        candidate_urls = [
-            "https://api.tabdeal.org/api/v1/user/wallets",
-            "https://api.tabdeal.org/api/v1/account/balances",
-            "https://api.tabdeal.org/api/v1/wallets",
-            "https://api.tabdeal.org/v1/account/balances",
-            "https://api.tabdeal.org/api/v1/balance"
-        ]
-        
-        # تست با کلید در هدر به شکل‌های مختلف رایج
-        headers_variants = [
-            {
-                "X-API-Key": self.config.TABDEAL_API_KEY,
-                "X-API-Secret": self.config.TABDEAL_SECRET,
-                "Content-Type": "application/json"
-            },
-            {
-                "api-key": self.config.TABDEAL_API_KEY,
-                "secret-key": self.config.TABDEAL_SECRET,
-                "Content-Type": "application/json"
-            },
-            {
-                "Authorization": f"Bearer {self.config.TABDEAL_API_KEY}",
-                "Content-Type": "application/json"
-            }
-        ]
-
-        for url in candidate_urls:
-            for headers in headers_variants:
-                try:
-                    res = requests.get(url, headers=headers, timeout=5)
-                    logger.info(f"دیاگ: تست {url} -> کد پاسخ: {res.status_code}")
-                    
-                    if res.status_code == 200:
-                        self.working_balance_url = url
-                        logger.info(f"یافتن موفقیت‌آمیز مسیر موجودی: {url}")
-                        
-                        # تست خواندن تتر
-                        data = res.json()
-                        logger.info(f"پاسخ دریافت شده از صرافی: str(data)[:200]")
-                        return
-                    elif res.status_code == 401 or res.status_code == 403:
-                        logger.warning(f"خطای دسترسی (احتمالاً ساختار هدر یا کلید نیازمند بررسی است): {res.text}")
-                except Exception as e:
-                    logger.debug(f"خطا در ارتباط با {url}: {e}")
-
-        logger.error("دیاگ: نتوانست به صورت خودکار به بخش موجودی متصل شود. ساختار پیش‌فرض تست می‌شود.")
 
     def get_usdt_balance(self) -> float:
-        """گرفتن موجودی واقعی تتر از صرافی تبدیل"""
-        if not self.working_balance_url:
-            # اگر مسیر پیدا نشده بود، روی اصلی‌ترین مسیر تلاش کن
-            self.working_balance_url = "https://api.tabdeal.org/api/v1/user/wallets"
-
+        """گرفتن موجودی واقعی تتر از مسیر استاندارد تبدیل"""
+        # آدرس رسمی موجودی بر اساس مستندات تبدیل
+        url = "https://api1.tabdeal.org/r/api/v1/account/balances"
+        
         headers = {
             "X-API-Key": self.config.TABDEAL_API_KEY,
             "X-API-Secret": self.config.TABDEAL_SECRET,
@@ -107,20 +51,21 @@ class TabdealTrader:
         }
 
         try:
-            res = requests.get(self.working_balance_url, headers=headers, timeout=10)
+            res = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"درخواست موجودی به تبدیل - کد پاسخ: {res.status_code}")
+            
             if res.status_code == 200:
                 response_data = res.json()
-                # بررسی ساختارهای مختلف احتمالی لیست دارایی‌ها
-                items = response_data.get('data', response_data.get('wallets', response_data))
+                items = response_data.get('data', response_data.get('balances', response_data))
                 if isinstance(items, list):
                     for item in items:
-                        currency = item.get('currency', item.get('asset', item.get('coin', ''))).upper()
+                        currency = item.get('currency', item.get('asset', '')).upper()
                         if currency == 'USDT':
-                            balance = float(item.get('free', item.get('amount', item.get('balance', 0.0))))
-                            logger.info(f"موجودی واقعی تتر از صرافی اخذ شد: {balance} USDT")
+                            balance = float(item.get('free', item.get('balance', 0.0)))
+                            logger.info(f"موجودی واقعی تتر با موفقیت اخذ شد: {balance} USDT")
                             return balance
             else:
-                logger.error(f"خطا در دریافت موجودی. کد وضعیت: {res.status_code} - متن: {res.text}")
+                logger.error(f"خطای صرافی در دریافت موجودی: {res.status_code} - {res.text}")
         except Exception as e:
             logger.error(f"خطای ارتباطی در دریافت موجودی تتر: {e}")
 
@@ -163,14 +108,13 @@ class TabdealTrader:
             }
 
             if side == "BUY":
-                order_url = "https://api.tabdeal.org/api/v1/order"
+                order_url = "https://api1.tabdeal.org/r/api/v1/order"
                 payload = {
                     "symbol": symbol.replace('/', '').lower(),
                     "side": "buy",
                     "type": "market",
                     "amount": amount_to_buy
                 }
-                # ارسال واقعی به صرافی
                 res = requests.post(order_url, json=payload, headers=headers, timeout=10)
                 logger.info(f"پاسخ ثبت سفارش خرید از صرافی: {res.status_code} - {res.text}")
                 
@@ -178,10 +122,7 @@ class TabdealTrader:
                 return None
 
             elif side == "SELL":
-                order_url = "https://api.tabdeal.org/api/v1/order"
-                base_currency = symbol.split('/')[0]
-                
-                # برای فروش کل دارایی آن ارز
+                order_url = "https://api1.tabdeal.org/r/api/v1/order"
                 payload = {
                     "symbol": symbol.replace('/', '').lower(),
                     "side": "sell",
@@ -287,7 +228,9 @@ if __name__ == "__main__":
     logger.info("سرویس همروش و اتصال به صرافی تبدیل استارت شد.")
     try:
         config = Config()
-        TabdealTrader(config)
+        # تست اولیه گرفتن موجودی به محض استارت
+        trader = TabdealTrader(config)
+        trader.get_usdt_balance()
     except Exception as e:
         logger.error(f"خطا: {e}")
 
