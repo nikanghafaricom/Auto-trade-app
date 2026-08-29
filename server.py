@@ -60,17 +60,17 @@ class TabdealTrader:
         if not self.exchange:
             return 0.0
         try:
-            balance = self.exchange.fetch_balance()
-            logger.info(f"پاسخ کامل موجودی صرافی: {balance}")
+            response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
+            logger.info(f"پاسخ خام صرافی تبدیل: {response}")
             
-            usdt_data = balance.get('USDT', {})
-            usdt_free = usdt_data.get('free', 0.0) if isinstance(usdt_data, dict) else 0.0
-            
-            if usdt_free == 0.0 and isinstance(balance.get('free'), dict):
-                usdt_free = balance.get('free', {}).get('USDT', 0.0)
-                
-            logger.info(f"موجودی تتر شناسایی شده: {usdt_free}")
-            return float(usdt_free)
+            data = response.get('data', [])
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency') == 'USDT' or asset.get('asset') == 'USDT' or asset.get('symbol') == 'USDT':
+                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
+            return 0.0
         except Exception as e:
             logger.error(f"خطا در دریافت موجودی صرافی تبدیل: {e}")
             return 0.0
@@ -125,8 +125,14 @@ class TabdealTrader:
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 try:
-                    balance = self.exchange.fetch_balance()
-                    base_free = balance.get(base_currency, {}).get('free', 0.0)
+                    response = self.exchange.private_get_account_balances() if hasattr(self.exchange, 'private_get_account_balances') else {}
+                    data = response.get('data', [])
+                    base_free = 0.0
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency') == base_currency or asset.get('asset') == base_currency or asset.get('symbol') == base_currency:
+                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
                 except Exception:
                     base_free = 0.0
                 
