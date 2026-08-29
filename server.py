@@ -57,19 +57,27 @@ class TabdealTrader:
             self.exchange = None
 
     def get_usdt_balance(self) -> float:
-        if not self.exchange:
-            return 0.0
         try:
-            # استفاده از متد استاندارد و امن CCXT برای دریافت موجودی کل حساب
-            balance_data = self.exchange.fetch_balance()
-            logger.info(f"پاسخ استاندارد موجودی صرافی تبدیل: {balance_data.get('USDT', {})}")
+            url = "https://api.tabdeal.org/r/api/v1/account/balances"
+            headers = {
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "Authorization": f"Bearer {self.config.TABDEAL_SECRET}",
+                "Content-Type": "application/json"
+            }
+            res = requests.get(url, headers=headers, timeout=10)
+            response = res.json()
+            logger.info(f"پاسخ مستقیم API تبدیل: {response}")
             
-            usdt_info = balance_data.get('USDT', {})
-            usdt_val = float(usdt_info.get('free', 0.0))
-            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-            return usdt_val
+            data = response.get('data', response.get('balances', []))
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
+            return 0.0
         except Exception as e:
-            logger.error(f"خطا در دریافت موجودی صرافی تبدیل: {e}")
+            logger.error(f"خطا در دریافت مستقیم موجودی صرافی تبدیل: {e}")
             return 0.0
 
     def check_and_update_capital(self, current_balance: float):
@@ -123,9 +131,20 @@ class TabdealTrader:
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    balance_data = self.exchange.fetch_balance()
-                    base_info = balance_data.get(base_currency, {})
-                    base_free = float(base_info.get('free', 0.0))
+                    url = "https://api.tabdeal.org/r/api/v1/account/balances"
+                    headers = {
+                        "X-API-Key": self.config.TABDEAL_API_KEY,
+                        "Authorization": f"Bearer {self.config.TABDEAL_SECRET}",
+                        "Content-Type": "application/json"
+                    }
+                    res = requests.get(url, headers=headers, timeout=10)
+                    response = res.json()
+                    data = response.get('data', response.get('balances', []))
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
+                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
                 except Exception:
                     base_free = 0.0
                 
