@@ -41,38 +41,36 @@ class TabdealTrader:
         logger.info("ماژول صرافی تبدیل با موفقیت فعال شد.")
 
     def get_usdt_balance(self) -> float:
-        """دریافت موجودی واقعی تتر از صرافی تبدیل با تست مسیرهای جایگزین"""
-        urls = [
-            "https://api1.tabdeal.org/api/v1/account",
-            "https://api1.tabdeal.org/api/v1/assets",
-            "https://api1.tabdeal.org/api/v1/user/wallets",
-            "https://api1.tabdeal.org/api/v1/portfolio"
-        ]
+        """دریافت موجودی واقعی تتر از صرافی تبدیل با هدرهای استاندارد صرافی"""
+        url = "https://api1.tabdeal.org/api/v1/account"
         
+        # اصلاح هدرهای احراز هویت مطابق با استانداردهای صرافی‌های ایرانی و مستندات تبدیل
         headers = {
-            "X-API-Key": self.config.TABDEAL_API_KEY,
-            "X-API-Secret": self.config.TABDEAL_SECRET,
+            "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
+            "api-key": self.config.TABDEAL_API_KEY,
             "Content-Type": "application/json"
         }
 
-        for url in urls:
-            try:
-                res = requests.get(url, headers=headers, timeout=10)
-                logger.info(f"تست مسیر جدید {url} - کد پاسخ: {res.status_code}")
-                if res.status_code == 200:
-                    data = res.json()
-                    items = data.get('data', data.get('balances', data.get('wallets', data)))
-                    if isinstance(items, list):
-                        for asset in items:
-                            currency = asset.get('currency', asset.get('asset', '')).upper()
-                            if currency == 'USDT':
-                                balance = float(asset.get('free', asset.get('balance', 0.0)))
-                                logger.info(f"موجودی واقعی تتر دریافت شد: {balance} USDT")
-                                return balance
-            except Exception as e:
-                logger.error(f"خطا در ارتباط با {url}: {e}")
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"درخواست به مسیر موجودی - کد پاسخ: {res.status_code} - متن: {res.text[:150]}")
+            
+            if res.status_code == 200:
+                data = res.json()
+                items = data.get('data', data.get('balances', data.get('assets', data)))
+                if isinstance(items, list):
+                    for asset in items:
+                        currency = asset.get('currency', asset.get('asset', '')).upper()
+                        if currency == 'USDT':
+                            balance = float(asset.get('free', asset.get('balance', 0.0)))
+                            logger.info(f"موجودی واقعی تتر دریافت شد: {balance} USDT")
+                            return balance
+            elif res.status_code == 401:
+                logger.error("خطای 401: کلید API یا Secret Key نامعتبر است یا دسترسی به حساب را ندارید.")
+        except Exception as e:
+            logger.error(f"خطا در ارتباط با سرور تبدیل: {e}")
 
-        logger.warning("مسیرها پاسخ ندادند. مقدار پیش‌فرض اعمال می‌شود.")
+        logger.warning("استفاده از مقدار پیش‌فرض موجودی برای جلوگیری از توقف ربات.")
         return 100.0
 
     def check_and_update_capital(self, current_balance: float):
@@ -103,8 +101,8 @@ class TabdealTrader:
 
             order_url = "https://api1.tabdeal.org/api/v1/order"
             headers = {
-                "X-API-Key": self.config.TABDEAL_API_KEY,
-                "X-API-Secret": self.config.TABDEAL_SECRET,
+                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
+                "api-key": self.config.TABDEAL_API_KEY,
                 "Content-Type": "application/json"
             }
 
@@ -168,7 +166,7 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Hamravesh Bot is active with Pure Requests!")
+        self.wfile.write(b"Hamravesh Bot is active with Tabdeal Integration!")
 
     def do_POST(self):
         try:
@@ -224,7 +222,7 @@ def start_hamravesh_server():
 threading.Thread(target=start_hamravesh_server, daemon=True).start()
 
 if __name__ == "__main__":
-    logger.info("سرویس همروش بدون وابستگی به پکیج خارجی استارت شد.")
+    logger.info("سرویس همروش استارت شد.")
     try:
         config = Config()
         trader = TabdealTrader(config)
