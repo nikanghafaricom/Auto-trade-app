@@ -299,6 +299,15 @@ threading.Thread(target=start_hamravesh_server, daemon=True).start()
 
 if __name__ == "__main__":
     logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
+    
+    # اجرای تست اتصال و دیاگ اولیه صرافی به محض راه‌اندازی
+    try:
+        config = Config()
+        logger.info("در حال اجرای دیاگ اولیه صرافی تبدیل...")
+        TabdealTrader(config)
+    except Exception as e:
+        logger.error(f"خطا در اجرای دیاگ اولیه صرافی: {e}")
+
     try:
         while True:
             time.sleep(60)
