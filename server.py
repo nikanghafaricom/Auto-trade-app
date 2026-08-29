@@ -58,24 +58,15 @@ class TabdealTrader:
 
     def get_usdt_balance(self) -> float:
         try:
-            url = "https://api.tabdeal.org/r/api/v1/account/balances"
-            headers = {
-                "X-API-Key": self.config.TABDEAL_API_KEY,
-                "Authorization": f"Bearer {self.config.TABDEAL_SECRET}",
-                "Content-Type": "application/json"
-            }
-            res = requests.get(url, headers=headers, timeout=10)
-            response = res.json()
-            logger.info(f"پاسخ مستقیم API تبدیل: {response}")
+            if not self.exchange:
+                return 0.0
             
-            data = response.get('data', response.get('balances', []))
-            if isinstance(data, list):
-                for asset in data:
-                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
-                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                        return usdt_val
-            return 0.0
+            # استفاده از متد استاندارد ccxt برای جلوگیری از خطای پارس JSON و مشکلات احراز هویت دستی
+            balance_data = self.exchange.fetch_balance()
+            usdt_val = float(balance_data.get('free', {}).get('USDT', 0.0))
+            logger.info(f"موجودی تتر شناسایی شده از طریق CCXT: {usdt_val}")
+            return usdt_val
+            
         except Exception as e:
             logger.error(f"خطا در دریافت مستقیم موجودی صرافی تبدیل: {e}")
             return 0.0
@@ -101,18 +92,19 @@ class TabdealTrader:
             usdt_balance = self.get_usdt_balance()
             self.check_and_update_capital(usdt_balance)
 
-            allocated_budget = self.initial_capital * usdt_allocation_percent
+            base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
+            allocated_budget = base_capital * usdt_allocation_percent
             MIN_REQUIRED_USDT = 1.0  
 
             if allocated_budget < MIN_REQUIRED_USDT:
                 if usdt_balance >= MIN_REQUIRED_USDT:
                     allocated_budget = MIN_REQUIRED_USDT
                 else:
-                    logger.warning(f"موجودی کیف پول کافی نیست. معامله رد شد.")
+                    logger.warning(f"موجودی کیف پول کافی نیست (موجودی: {usdt_balance} تتر). معامله رد شد.")
                     return None
 
             if usdt_balance < allocated_budget:
-                logger.warning(f"موجودی کل کافی نیست. معامله رد شد.")
+                logger.warning(f"موجودی کل کافی نیست (موجودی: {usdt_balance}، مورد نیاز: {allocated_budget}). معامله رد شد.")
                 return None
 
             amount_to_buy = allocated_budget / price
@@ -124,27 +116,14 @@ class TabdealTrader:
                     "entry_price": price
                 }
                 logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
-                # در خرید اسپات، چون معامله باز شده، نتیجه نهایی سود/زیان در این مرحله بسته نمی‌شود (ثبت ورود انجام شده)
                 return None
 
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    url = "https://api.tabdeal.org/r/api/v1/account/balances"
-                    headers = {
-                        "X-API-Key": self.config.TABDEAL_API_KEY,
-                        "Authorization": f"Bearer {self.config.TABDEAL_SECRET}",
-                        "Content-Type": "application/json"
-                    }
-                    res = requests.get(url, headers=headers, timeout=10)
-                    response = res.json()
-                    data = response.get('data', response.get('balances', []))
-                    if isinstance(data, list):
-                        for asset in data:
-                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
-                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
-                                break
+                    balance_data = self.exchange.fetch_balance()
+                    base_free = float(balance_data.get('free', {}).get(base_currency, 0.0))
                 except Exception:
                     base_free = 0.0
                 
