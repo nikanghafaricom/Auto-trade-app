@@ -53,20 +53,68 @@ class TabdealTrader:
                 'options': {'defaultType': 'spot'}
             })
         except Exception as e:
-            logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
+            logger.error(f"دیاگ صرافی: خطا در راه‌اندازی شیء ccxt تبدیل: {e}")
             self.exchange = None
+
+        # اجرای تست اتصال و دیاگ اولیه در هنگام راه‌اندازی
+        self.run_connection_diagnostic()
+
+    def run_connection_diagnostic(self):
+        """سیستم دیاگ آنی برای بررسی صحت کلیدها و ارتباط با صرافی تبدیل"""
+        logger.info("دیاگ: در حال بررسی اتصال اولیه به صرافی تبدیل...")
+        try:
+            url = "https://api.tabdeal.org/r/api/v1/account/balances"
+            headers = {
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "X-API-Secret": self.config.TABDEAL_SECRET,
+                "Content-Type": "application/json"
+            }
+            res = requests.get(url, headers=headers, timeout=10)
+            
+            logger.info(f"دیاگ: کد وضعیت پاسخ صرافی: {res.status_code}")
+            
+            if res.status_code == 200:
+                response = res.json()
+                logger.info("دیاگ موفق: اتصال به صرافی تبدیل برقرار شد و توکن‌ها معتبرند.")
+                # تست استخراج موجودی تتر در دیاگ
+                data = response.get('data', response.get('balances', []))
+                usdt_val = 0.0
+                if isinstance(data, list):
+                    for asset in data:
+                        if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                            usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                            break
+                logger.info(f"دیاگ: موجودی تتر فعلی حساب شما: {usdt_val} USDT")
+            else:
+                logger.error(f"دیاگ خطا: صرافی پاسخ نامعتبر داد. کد: {res.status_code} | متن پاسخ: {res.text}")
+        except Exception as e:
+            logger.error(f"دیاگ خطا: امکان ارتباط با سرور صرافی تبدیل وجود ندارد: {e}")
 
     def get_usdt_balance(self) -> float:
         try:
-            if not self.exchange:
+            url = "https://api.tabdeal.org/r/api/v1/account/balances"
+            headers = {
+                "X-API-Key": self.config.TABDEAL_API_KEY,
+                "X-API-Secret": self.config.TABDEAL_SECRET,
+                "Content-Type": "application/json"
+            }
+            res = requests.get(url, headers=headers, timeout=10)
+            
+            if res.status_code != 200:
+                logger.error(f"خطای HTTP در دریافت موجودی: {res.status_code} - {res.text}")
                 return 0.0
+                
+            response = res.json()
+            logger.info(f"پاسخ مستقیم API تبدیل دریافت شد.")
             
-            # استفاده از متد استاندارد ccxt برای جلوگیری از خطای پارس JSON و مشکلات احراز هویت دستی
-            balance_data = self.exchange.fetch_balance()
-            usdt_val = float(balance_data.get('free', {}).get('USDT', 0.0))
-            logger.info(f"موجودی تتر شناسایی شده از طریق CCXT: {usdt_val}")
-            return usdt_val
-            
+            data = response.get('data', response.get('balances', []))
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
+            return 0.0
         except Exception as e:
             logger.error(f"خطا در دریافت مستقیم موجودی صرافی تبدیل: {e}")
             return 0.0
@@ -122,8 +170,20 @@ class TabdealTrader:
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    balance_data = self.exchange.fetch_balance()
-                    base_free = float(balance_data.get('free', {}).get(base_currency, 0.0))
+                    url = "https://api.tabdeal.org/r/api/v1/account/balances"
+                    headers = {
+                        "X-API-Key": self.config.TABDEAL_API_KEY,
+                        "X-API-Secret": self.config.TABDEAL_SECRET,
+                        "Content-Type": "application/json"
+                    }
+                    res = requests.get(url, headers=headers, timeout=10)
+                    response = res.json()
+                    data = response.get('data', response.get('balances', []))
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
+                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
                 except Exception:
                     base_free = 0.0
                 
