@@ -63,7 +63,7 @@ class TabdealTrader:
         """سیستم دیاگ آنی برای بررسی صحت کلیدها و ارتباط با صرافی تبدیل"""
         logger.info("دیاگ: در حال بررسی اتصال اولیه به صرافی تبدیل...")
         try:
-            url = "https://api.tabdeal.org/r/api/v1/account/balances"
+            url = "https://api.tabdeal.org/api/v1/account/balances"
             headers = {
                 "X-API-Key": self.config.TABDEAL_API_KEY,
                 "X-API-Secret": self.config.TABDEAL_SECRET,
@@ -92,7 +92,7 @@ class TabdealTrader:
 
     def get_usdt_balance(self) -> float:
         try:
-            url = "https://api.tabdeal.org/r/api/v1/account/balances"
+            url = "https://api.tabdeal.org/api/v1/account/balances"
             headers = {
                 "X-API-Key": self.config.TABDEAL_API_KEY,
                 "X-API-Secret": self.config.TABDEAL_SECRET,
@@ -170,7 +170,7 @@ class TabdealTrader:
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    url = "https://api.tabdeal.org/r/api/v1/account/balances"
+                    url = "https://api.tabdeal.org/api/v1/account/balances"
                     headers = {
                         "X-API-Key": self.config.TABDEAL_API_KEY,
                         "X-API-Secret": self.config.TABDEAL_SECRET,
