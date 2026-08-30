@@ -238,6 +238,11 @@ class RenderNotifier:
         except Exception as e:
             logger.error(f"خطا در ارسال داده به رندر: {e}")
 
+# ==================== تعریف سراسری برای حفظ وضعیت پوزیشن‌ها ====================
+config = Config()
+trader = TabdealTrader(config)
+notifier = RenderNotifier(config)
+
 # ==================== وب‌سرور همروش ====================
 class HamraveshWebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -247,9 +252,9 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Hamravesh Bot is alive and running!")
 
     def do_POST(self):
+        global trader, notifier, config
         try:
             auth_token = self.headers.get("X-Secret-Token")
-            config = Config()
             
             if config.SECRET_TOKEN and auth_token != config.SECRET_TOKEN:
                 logger.warning("تلاش برای دسترسی غیرمجاز به وب‌هوک همروش با توکن اشتباه.")
@@ -277,11 +282,9 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 dynamic_sl = data.get("sl")
                 logger.info(f"دستور اجرای معامله از رندر دریافت شد: {symbol} | سمت: {side}")
                 
-                trader = TabdealTrader(config)
                 trade_result = trader.execute_spot_order(symbol, side, price, dynamic_tp, dynamic_sl)
 
                 if trade_result:
-                    notifier = RenderNotifier(config)
                     notifier.send_to_render(trade_result)
 
             self.send_response(200)
@@ -311,8 +314,6 @@ threading.Thread(target=start_hamravesh_server, daemon=True).start()
 if __name__ == "__main__":
     logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
     try:
-        config = Config()
-        trader = TabdealTrader(config)
         trader.get_usdt_balance()
 
         while True:
@@ -323,10 +324,9 @@ if __name__ == "__main__":
                         current_price = float(ticker['last'])
                         close_result = trader.check_tp_sl_and_update(symbol, current_price)
                         if close_result:
-                            notifier = RenderNotifier(config)
                             notifier.send_to_render(close_result)
                     except Exception as e:
-                        pass
+                        logger.error(f"خطا در بررسی قیمت لحظه‌ای {symbol}: {e}")
             time.sleep(30)
     except KeyboardInterrupt:
         logger.info("بخش همروش متوقف شد.")
