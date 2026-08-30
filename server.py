@@ -55,14 +55,12 @@ class TabdealTrader:
                 'options': {'defaultType': 'spot'}
             })
             logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
-            # همگام‌سازی خودکار پوزیشن‌ها با صرافی هنگام استارت
             self.sync_positions_from_exchange()
         except Exception as e:
             logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
             self.exchange = None
 
     def sync_positions_from_exchange(self):
-        """بررسی خودکار موجودی صرافی و بازیابی پوزیشن‌های باز موقع روشن شدن ربات"""
         try:
             if not self.exchange:
                 return
@@ -75,24 +73,21 @@ class TabdealTrader:
                 if currency.upper() in ['USDT', 'IRT', 'IRR', 'TOMAN']:
                     continue
                 
-                # اگر مقداری از یک ارز دیجیتال در حساب موجود باشد
                 if float(amount) > 0:
                     symbol = f"{currency.upper()}/USDT"
                     try:
-                        # دریافت آخرین قیمت خرید از تاریخچه معاملات صرافی
                         trades = self.exchange.fetch_my_trades(symbol, limit=5)
                         entry_price = 0.0
                         if trades:
-                            # آخرین معامله خرید را پیدا می‌کنیم
                             buy_trades = [t for t in trades if t['side'] == 'buy']
                             if buy_trades:
                                 entry_price = float(buy_trades[-1]['price'])
                         
                         if entry_price == 0:
-                            # اگر تاریخچه پیدا نشد، از قیمت لحظه‌ای فعلی استفاده کن
                             ticker = self.exchange.fetch_ticker(symbol)
                             entry_price = float(ticker['last'])
 
+                        # مقدار پیش‌فرض داینامیک بر اساس ATR تقریبی هنگام بازیابی
                         tp_price = entry_price * 1.025
                         sl_price = entry_price * 0.985
 
@@ -163,7 +158,7 @@ class TabdealTrader:
             
         return None
 
-    def execute_spot_order(self, symbol: str, side: str, price: float):
+    def execute_spot_order(self, symbol: str, side: str, price: float, dynamic_tp: float = None, dynamic_sl: float = None):
         if not self.exchange:
             return None
 
@@ -192,15 +187,16 @@ class TabdealTrader:
                 amount_to_buy = allocated_budget / price
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
                 
-                tp_price = price * 1.025
-                sl_price = price * 0.985
+                # استفاده از حد سود و زیان داینامیک دریافتی (مشابه کد اول)
+                tp_price = dynamic_tp if dynamic_tp else price * 1.025
+                sl_price = dynamic_sl if dynamic_sl else price * 0.985
                 
                 self.active_positions[symbol] = {
                     "entry_price": price,
                     "tp_price": tp_price,
                     "sl_price": sl_price
                 }
-                logger.info(f"سفارش خرید اسپات ثبت شد. TP: {tp_price} | SL: {sl_price}")
+                logger.info(f"سفارش خرید اسپات با TP و SL داینامیک ثبت شد. TP: {tp_price} | SL: {sl_price}")
                 return None
 
             elif side == "SELL":
@@ -298,9 +294,11 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 symbol = data.get("symbol")
                 side = data.get("side")
                 price = data.get("price")
+                dynamic_tp = data.get("tp1")
+                dynamic_sl = data.get("sl")
                 
                 trader = TabdealTrader(config)
-                trade_result = trader.execute_spot_order(symbol, side, price)
+                trade_result = trader.execute_spot_order(symbol, side, price, dynamic_tp, dynamic_sl)
 
                 if trade_result:
                     notifier = RenderNotifier(config)
