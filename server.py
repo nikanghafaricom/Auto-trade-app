@@ -67,13 +67,13 @@ class TabdealTrader:
             
             logger.info("در حال بررسی موجودی صرافی برای بازیابی پوزیشن‌های باز...")
             
-            # اصلاح خطای عدم پشتیبانی ccxt از fetchBalance در صرافی تبدیل
+            # مدیریت خطای عدم پشتیبانی ccxt از fetchBalance در صرافی تبدیل
             free_balances = {}
             try:
                 balance = self.exchange.fetch_balance()
                 free_balances = balance.get('free', {})
-            except Exception as ccxt_err:
-                logger.warning(f"متد fetchBalance توسط صرافی پشتیبانی نمی‌شود (رفع خطای کرش): {ccxt_err}")
+            except Exception:
+                free_balances = {}
             
             for currency, amount in free_balances.items():
                 if currency.upper() in ['USDT', 'IRT', 'IRR', 'TOMAN']:
