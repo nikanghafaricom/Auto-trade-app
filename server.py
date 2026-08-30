@@ -39,13 +39,13 @@ class Config:
     def validate(self):
         pass
 
-# ==================== مدیریت معاملات واقعی در صرافی تبدیل (Spot بدون اهرم) ====================
+# ==================== مدیریت معاملات واقعی در صرافی تبدیل (Spot بدون اهرم با حد سود و زیان) ====================
 class TabdealTrader:
     def __init__(self, config: Config):
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
-        self.active_positions = {}  # ذخیره قیمت ورود برای محاسبه سود و زیان
+        self.active_positions = {}  # ذخیره اطلاعات پوزیشن فعال شامل قیمت ورود، حد سود و حد زیان
         
         try:
             self.exchange = ccxt.tabdeal({
@@ -59,13 +59,11 @@ class TabdealTrader:
             self.exchange = None
 
     def _generate_signature(self, query_string: str) -> str:
-        """تولید امضای امنیتی بر اساس مستندات رسمی تبدیل با HMAC-SHA256"""
         secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
         message_bytes = query_string.encode('utf-8')
         return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
 
     def get_usdt_balance(self) -> Optional[float]:
-        """دریافت موجودی با قابلیت تفکیک خطای ارتباطی از موجودی صفر/ناقص"""
         try:
             url = "https://api1.tabdeal.org/api/v1/account"
             timestamp = str(int(time.time() * 1000))
@@ -79,85 +77,86 @@ class TabdealTrader:
             full_url = f"{url}?{query_string}&signature={signature}"
 
             res = requests.get(full_url, headers=headers, timeout=10)
-            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - کد پاسخ: {res.status_code}")
-            
             if res.status_code == 200:
                 response = res.json()
-                logger.info(f"محتوای پاسخ موجودی: {response}")
                 data = response.get('data', response.get('balances', response.get('assets', [])))
                 if isinstance(data, list):
                     for asset in data:
                         if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
                             usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
                             return usdt_val
                 return 0.0
             else:
-                logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
-                return None  # نشان‌دهنده خطای ارتباطی/سرور
+                return None
         except Exception as e:
-            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی تبدیل برای دریافت موجودی: {e}")
-            return None  # نشان‌دهنده قطع ارتباط یا ارور شبکه
+            return None
 
     def check_and_update_capital(self, current_balance: float):
-        """بررسی و به‌روزرسانی سرمایه پایه هر ۳ ساعت یک‌بار"""
         now = datetime.now()
         if self.initial_capital is None or self.last_capital_reset_time is None:
             self.initial_capital = current_balance
             self.last_capital_reset_time = now
-            logger.info(f"سرمایه پایه اولیه ثبت شد: {self.initial_capital} USDT")
         elif now - self.last_capital_reset_time >= timedelta(hours=3):
             self.initial_capital = current_balance
             self.last_capital_reset_time = now
-            logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
+
+    def check_tp_sl_and_update(self, symbol: str, current_price: float) -> Optional[dict]:
+        """بررسی لحظه‌ای حد سود (+2.5%) و حد زیان (-1.5%) برای پوزیشنی که باز است"""
+        if symbol not in self.active_positions:
+            return None
+        
+        pos = self.active_positions[symbol]
+        entry_price = pos["entry_price"]
+        tp_price = pos["tp_price"]
+        sl_price = pos["sl_price"]
+        
+        # بررسی تاچ شدن حد سود یا حد زیان
+        if current_price >= tp_price or current_price <= sl_price:
+            logger.info(f"حد سود یا حد زیان برای {symbol} فعال شد! قیمت لحظه‌ای: {current_price} | قیمت ورود: {entry_price}")
+            return self.execute_spot_order(symbol, "SELL", current_price)
+            
+        return None
 
     def execute_spot_order(self, symbol: str, side: str, price: float):
         if not self.exchange:
-            logger.error("صرافی تبدیل مقداردهی نشده است.")
             return None
 
         try:
             usdt_balance = self.get_usdt_balance()
-            
-            # بررسی اینکه آیا ارور مربوط به ارتباط با صرافی بوده یا خیر
             if usdt_balance is None:
-                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی تبدیل جهت استعلام موجودی وجود نداشت (خطای شبکه یا API).")
                 return None
 
             self.check_and_update_capital(usdt_balance)
 
-            # قانون جدید: کل پول باید حداقل ۱ تتر باشد وگرنه معامله کلاً رد شود
-            if usdt_balance < 1.0:
-                logger.warning(f"موجودی کل حساب ({usdt_balance} USDT) کمتر از حداقل مجاز صرافی (1.0 USDT) است. معامله رد شد.")
-                return None
-
-            base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
-            
-            # محاسبه ۲۰ درصد کل موجودی
-            allocated_budget = base_capital * 0.20
-
-            # اگر ۲۰ درصد کمتر از ۱ تتر شد، با حداقل ۱ تتر معامله کند (به شرطی که کل پول حداقل ۱ تتر را داشته باشد)
-            if allocated_budget < 1.0:
-                allocated_budget = 1.0
-
-            # اطمینان از اینکه موجودی کل برای این بودجه تخصیص‌یافته کافی است
-            if usdt_balance < allocated_budget:
-                logger.warning(f"موجودی کل کافی برای تخصیص بودجه مورد نظر نیست. معامله رد شد.")
-                return None
-
-            amount_to_buy = allocated_budget / price
-            logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
-
-            formatted_symbol = symbol.replace('/', '').upper()
-            if not formatted_symbol.endswith('USDT') and not formatted_symbol.endswith('IRT'):
-                formatted_symbol += 'USDT'
-
             if side == "BUY":
+                if symbol in self.active_positions:
+                    logger.info(f"برای نماد {symbol} از قبل پوزیشن باز وجود دارد؛ خرید جدید ثبت نمی‌شود.")
+                    return None
+
+                if usdt_balance < 1.0:
+                    return None
+
+                base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
+                allocated_budget = base_capital * 0.20
+                if allocated_budget < 1.0:
+                    allocated_budget = 1.0
+
+                if usdt_balance < allocated_budget:
+                    return None
+
+                amount_to_buy = allocated_budget / price
                 order = self.exchange.create_market_buy_order(symbol, amount_to_buy)
+                
+                # تعیین دقیق حد سود (+2.5%) و حد زیان (-1.5%)
+                tp_price = price * 1.025
+                sl_price = price * 0.985
+                
                 self.active_positions[symbol] = {
-                    "entry_price": price
+                    "entry_price": price,
+                    "tp_price": tp_price,
+                    "sl_price": sl_price
                 }
-                logger.info(f"سفارش خرید اسپات در تبدیل ثبت شد: {order}")
+                logger.info(f"سفارش خرید اسپات ثبت شد. TP: {tp_price} | SL: {sl_price}")
                 return None
 
             elif side == "SELL":
@@ -168,11 +167,7 @@ class TabdealTrader:
                     timestamp = str(int(time.time() * 1000))
                     query_string = f"timestamp={timestamp}"
                     signature = self._generate_signature(query_string)
-                    
-                    headers = {
-                        "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                        "Content-Type": "application/json"
-                    }
+                    headers = {"X-MBX-APIKEY": self.config.TABDEAL_API_KEY, "Content-Type": "application/json"}
                     full_url = f"{url}?{query_string}&signature={signature}"
                     res = requests.get(full_url, headers=headers, timeout=10)
                     if res.status_code == 200:
@@ -183,21 +178,17 @@ class TabdealTrader:
                                 if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
                                     base_free = float(asset.get('free', asset.get('balance', 0.0)))
                                     break
-                    else:
-                        logger.error(f"خطای ارتباط با صرافی در استعلام دارایی پایه برای فروش (کد پاسخ {res.status_code})")
                 except Exception as e:
-                    logger.error(f"خطا در استعلام دارایی پایه برای فروش: {e}")
+                    pass
                 
                 if base_free > 0:
                     order = self.exchange.create_market_sell_order(symbol, base_free)
-                    
                     pnl_percent = 0.0
                     if symbol in self.active_positions:
                         entry_price = self.active_positions[symbol]["entry_price"]
                         pnl_percent = ((price - entry_price) / entry_price) * 100
                         del self.active_positions[symbol]
 
-                    logger.info(f"سفارش فروش اسپات در تبدیل ثبت شد: {order} | سود/زیان: {pnl_percent:.2f}%")
                     return {
                         "action": "close_trade",
                         "symbol": symbol,
@@ -206,14 +197,16 @@ class TabdealTrader:
                         "pnl": round(pnl_percent, 2)
                     }
                 else:
-                    logger.warning(f"دارایی کافی از ارز {base_currency} برای فروش موجود نیست.")
+                    # اگر دارایی آزاد در صرافی نبود ولی پوزیشن محلی داشتیم، پاکش می‌کنیم
+                    if symbol in self.active_positions:
+                        del self.active_positions[symbol]
                     return None
-                
+
         except Exception as e:
-            logger.error(f"خطا در اجرای سفارش واقعی در صرافی تبدیل برای {symbol}: {e}")
+            logger.error(f"خطا در اجرای سفارش صرافی تبدیل برای {symbol}: {e}")
             return None
 
-# ==================== ارتباط با رندر (جهت ارسال نتیجه معامله) ====================
+# ==================== ارتباط با رندر ====================
 class RenderNotifier:
     def __init__(self, config: Config):
         self.config = config
@@ -228,7 +221,7 @@ class RenderNotifier:
         except Exception as e:
             logger.error(f"خطا در ارسال داده به رندر: {e}")
 
-# ==================== وب‌سرور و دریافت دستور از رندر ====================
+# ==================== وب‌سرور همروش ====================
 class HamraveshWebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -249,10 +242,8 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
-            
             action = data.get("action")
 
-            # پاسخ به پینگ تستی رندر برای بررسی سلامت چرخه
             if action == "ping":
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
@@ -260,7 +251,6 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"status": "pong"}).encode('utf-8'))
                 return
 
-            # دریافت دستور معامله از رندر و اجرا در صرافی تبدیل
             if action == "execute_trade":
                 symbol = data.get("symbol")
                 side = data.get("side")
@@ -269,7 +259,6 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 trader = TabdealTrader(config)
                 trade_result = trader.execute_spot_order(symbol, side, price)
 
-                # اگر معامله بسته شد و نتیجه سود/زیان داشت، به رندر برگردانده شود
                 if trade_result:
                     notifier = RenderNotifier(config)
                     notifier.send_to_render(trade_result)
@@ -280,7 +269,7 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "success", "message": "Processed"}).encode('utf-8'))
 
         except Exception as e:
-            logger.error(f"خطا در پردازش وب‌هوک دریافتی در همروش: {e}")
+            logger.error(f"خطا در پردازش وب‌هوک همروش: {e}")
             self.send_response(500)
             self.end_headers()
 
@@ -291,7 +280,6 @@ def start_hamravesh_server():
     port = int(os.environ.get("PORT", 8080))
     try:
         server = HTTPServer(("0.0.0.0", port), HamraveshWebhookHandler)
-        logger.info(f"وب‌سرور همروش روی پورت {port} آغاز به کار کرد.")
         server.serve_forever()
     except Exception as e:
         logger.error(f"خطا در اجرای وب‌سرور همروش: {e}")
@@ -299,14 +287,25 @@ def start_hamravesh_server():
 threading.Thread(target=start_hamravesh_server, daemon=True).start()
 
 if __name__ == "__main__":
-    logger.info("بخش همروش بات فعال شد و آماده دریافت دستورات از رندر است.")
+    logger.info("بخش همروش فعال شد.")
     try:
-        # دیاگ لحظه‌ای موجودی در همان ثانیه اول استارت
         config = Config()
         trader = TabdealTrader(config)
         trader.get_usdt_balance()
 
         while True:
-            time.sleep(60)
+            # بررسی دوره‌ای قیمت‌های لحظه‌ای برای چک کردن حد سود و زیان پوزیشن‌های باز
+            if trader.active_positions and trader.exchange:
+                for symbol in list(trader.active_positions.keys()):
+                    try:
+                        ticker = trader.exchange.fetch_ticker(symbol)
+                        current_price = float(ticker['last'])
+                        close_result = trader.check_tp_sl_and_update(symbol, current_price)
+                        if close_result:
+                            notifier = RenderNotifier(config)
+                            notifier.send_to_render(close_result)
+                    except Exception as e:
+                        pass
+            time.sleep(30)
     except KeyboardInterrupt:
         logger.info("بخش همروش متوقف شد.")
