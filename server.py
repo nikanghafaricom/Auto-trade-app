@@ -120,7 +120,9 @@ class TabdealTrader:
 
             base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
             allocated_budget = base_capital * usdt_allocation_percent
-            MIN_REQUIRED_USDT = 1.0  
+            
+            # کاهش حداقل موجودی مورد نیاز به 0.1 تتر برای سازگاری با موجودی فعلی شما
+            MIN_REQUIRED_USDT = 0.1  
 
             if allocated_budget < MIN_REQUIRED_USDT:
                 if usdt_balance >= MIN_REQUIRED_USDT:
