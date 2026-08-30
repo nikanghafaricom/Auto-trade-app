@@ -64,7 +64,8 @@ class TabdealTrader:
         message_bytes = query_string.encode('utf-8')
         return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
 
-    def get_usdt_balance(self) -> float:
+    def get_usdt_balance(self) -> Optional[float]:
+        """دریافت موجودی با قابلیت تفکیک خطای ارتباطی از موجودی صفر/ناقص"""
         try:
             url = "https://api1.tabdeal.org/api/v1/account"
             timestamp = str(int(time.time() * 1000))
@@ -90,12 +91,13 @@ class TabdealTrader:
                             usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
                             logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
                             return usdt_val
+                return 0.0
             else:
-                logger.error(f"خطا در دریافت موجودی صرافی تبدیل - متن پاسخ: {res.text}")
-            return 0.0
+                logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
+                return None  # نشان‌دهنده خطای ارتباطی/سرور
         except Exception as e:
-            logger.error(f"خطا در دریافت مستقیم موجودی صرافی تبدیل: {e}")
-            return 0.0
+            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی تبدیل برای دریافت موجودی: {e}")
+            return None  # نشان‌دهنده قطع ارتباط یا ارور شبکه
 
     def check_and_update_capital(self, current_balance: float):
         """بررسی و به‌روزرسانی سرمایه پایه هر ۳ ساعت یک‌بار"""
@@ -109,30 +111,38 @@ class TabdealTrader:
             self.last_capital_reset_time = now
             logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
 
-    def execute_spot_order(self, symbol: str, side: str, price: float, usdt_allocation_percent: float = 0.50):
+    def execute_spot_order(self, symbol: str, side: str, price: float):
         if not self.exchange:
             logger.error("صرافی تبدیل مقداردهی نشده است.")
             return None
 
         try:
             usdt_balance = self.get_usdt_balance()
+            
+            # بررسی اینکه آیا ارور مربوط به ارتباط با صرافی بوده یا خیر
+            if usdt_balance is None:
+                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی تبدیل جهت استعلام موجودی وجود نداشت (خطای شبکه یا API).")
+                return None
+
             self.check_and_update_capital(usdt_balance)
 
+            # قانون جدید: کل پول باید حداقل ۱ تتر باشد وگرنه معامله کلاً رد شود
+            if usdt_balance < 1.0:
+                logger.warning(f"موجودی کل حساب ({usdt_balance} USDT) کمتر از حداقل مجاز صرافی (1.0 USDT) است. معامله رد شد.")
+                return None
+
             base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
-            allocated_budget = base_capital * usdt_allocation_percent
             
-            # کاهش حداقل موجودی مورد نیاز به 0.1 تتر برای سازگاری با موجودی فعلی شما
-            MIN_REQUIRED_USDT = 0.1  
+            # محاسبه ۲۰ درصد کل موجودی
+            allocated_budget = base_capital * 0.20
 
-            if allocated_budget < MIN_REQUIRED_USDT:
-                if usdt_balance >= MIN_REQUIRED_USDT:
-                    allocated_budget = MIN_REQUIRED_USDT
-                else:
-                    logger.warning(f"موجودی کیف پول کافی نیست. معامله رد شد.")
-                    return None
+            # اگر ۲۰ درصد کمتر از ۱ تتر شد، با حداقل ۱ تتر معامله کند (به شرطی که کل پول حداقل ۱ تتر را داشته باشد)
+            if allocated_budget < 1.0:
+                allocated_budget = 1.0
 
+            # اطمینان از اینکه موجودی کل برای این بودجه تخصیص‌یافته کافی است
             if usdt_balance < allocated_budget:
-                logger.warning(f"موجودی کل کافی نیست. معامله رد شد.")
+                logger.warning(f"موجودی کل کافی برای تخصیص بودجه مورد نظر نیست. معامله رد شد.")
                 return None
 
             amount_to_buy = allocated_budget / price
@@ -165,15 +175,18 @@ class TabdealTrader:
                     }
                     full_url = f"{url}?{query_string}&signature={signature}"
                     res = requests.get(full_url, headers=headers, timeout=10)
-                    response = res.json()
-                    data = response.get('data', response.get('balances', response.get('assets', [])))
-                    if isinstance(data, list):
-                        for asset in data:
-                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
-                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
-                                break
-                except Exception:
-                    base_free = 0.0
+                    if res.status_code == 200:
+                        response = res.json()
+                        data = response.get('data', response.get('balances', response.get('assets', [])))
+                        if isinstance(data, list):
+                            for asset in data:
+                                if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
+                                    base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                    break
+                    else:
+                        logger.error(f"خطای ارتباط با صرافی در استعلام دارایی پایه برای فروش (کد پاسخ {res.status_code})")
+                except Exception as e:
+                    logger.error(f"خطا در استعلام دارایی پایه برای فروش: {e}")
                 
                 if base_free > 0:
                     order = self.exchange.create_market_sell_order(symbol, base_free)
