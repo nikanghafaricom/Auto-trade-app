@@ -55,59 +55,9 @@ class TabdealTrader:
                 'options': {'defaultType': 'spot'}
             })
             logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
-            self.sync_positions_from_exchange()
         except Exception as e:
             logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
             self.exchange = None
-
-    def sync_positions_from_exchange(self):
-        try:
-            if not self.exchange:
-                return
-            
-            logger.info("در حال بررسی موجودی صرافی برای بازیابی پوزیشن‌های باز...")
-            
-            # مدیریت خطای عدم پشتیبانی ccxt از fetchBalance در صرافی تبدیل
-            free_balances = {}
-            try:
-                balance = self.exchange.fetch_balance()
-                free_balances = balance.get('free', {})
-            except Exception:
-                free_balances = {}
-            
-            for currency, amount in free_balances.items():
-                if currency.upper() in ['USDT', 'IRT', 'IRR', 'TOMAN']:
-                    continue
-                
-                if float(amount) > 0:
-                    symbol = f"{currency.upper()}/USDT"
-                    try:
-                        trades = self.exchange.fetch_my_trades(symbol, limit=5)
-                        entry_price = 0.0
-                        if trades:
-                            buy_trades = [t for t in trades if t['side'] == 'buy']
-                            if buy_trades:
-                                entry_price = float(buy_trades[-1]['price'])
-                        
-                        if entry_price == 0:
-                            ticker = self.exchange.fetch_ticker(symbol)
-                            entry_price = float(ticker['last'])
-
-                        # مقدار پیش‌فرض داینامیک بر اساس ATR تقریبی هنگام بازیابی
-                        tp_price = entry_price * 1.025
-                        sl_price = entry_price * 0.985
-
-                        self.active_positions[symbol] = {
-                            "entry_price": entry_price,
-                            "tp_price": tp_price,
-                            "sl_price": sl_price
-                        }
-                        logger.info(f"پوزیشن باز برای {symbol} از صرافی بازیابی شد! قیمت ورود: {entry_price} | TP: {tp_price} | SL: {sl_price}")
-                    except Exception as ex:
-                        logger.error(f"خطا در بازیابی اطلاعات پوزیشن {symbol}: {ex}")
-                        
-        except Exception as e:
-            logger.error(f"خطا در همگام‌سازی پوزیشن‌ها با صرافی: {e}")
 
     def _generate_signature(self, query_string: str) -> str:
         secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
