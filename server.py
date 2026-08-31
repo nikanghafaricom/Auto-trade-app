@@ -1,5 +1,5 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه ۱: فقط خرید (BUY)
+# Hybrid Signal Bot - نسخه اصلاح شده ۱: فقط خرید (BUY)
 # ==============================================
 import os
 import time
@@ -9,7 +9,6 @@ import hmac
 import hashlib
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime, timedelta
 from typing import Optional
 import ccxt
 import requests
@@ -27,16 +26,10 @@ logger = logging.getLogger(__name__)
 class Config:
     TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
     TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
-    RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
-    SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
 class TabdealTrader:
     def __init__(self, config: Config):
         self.config = config
-        self.initial_capital = None
-        self.last_capital_reset_time = None
-        self.active_positions = {}
-        
         try:
             self.exchange = ccxt.tabdeal({
                 'apiKey': config.TABDEAL_API_KEY,
@@ -47,7 +40,6 @@ class TabdealTrader:
             logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
         except Exception as e:
             logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
-            self.exchange = None
 
     def _generate_signature(self, query_string: str) -> str:
         secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
@@ -100,7 +92,17 @@ class TabdealTrader:
             amount_str = f"{amount_to_buy:.6f}"
             timestamp = str(int(time.time() * 1000))
             
-            params = {
+            # مرتب‌سازی پارامترها به صورت الفبایی برای ساخت صحیح Query String
+            query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
+            signature = self._generate_signature(query_string)
+            
+            headers = {
+                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            # ارسال پارامترها به صورت فرم‌دیتا در بدنه درخواست به همراه امضا در URL
+            payload = {
                 "symbol": clean_symbol,
                 "tabdealSymbol": tabdeal_symbol,
                 "side": "BUY",
@@ -109,16 +111,14 @@ class TabdealTrader:
                 "timestamp": timestamp
             }
             
-            query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
-            signature = self._generate_signature(query_string)
-            headers = {"X-MBX-APIKEY": self.config.TABDEAL_API_KEY, "Content-Type": "application/json"}
-            full_url = f"{url}?signature={signature}"
+            full_url = f"{url}?{query_string}&signature={signature}"
+            res = requests.post(full_url, data=payload, headers=headers, timeout=10)
             
-            res = requests.post(full_url, json=params, headers=headers, timeout=10)
+            logger.info(f"کد پاسخ صرافی برای خرید: {res.status_code} | متن پاسخ: {res.text}")
             if res.status_code in [200, 201]:
-                logger.info(f"سفارش خرید بیت‌کوین با موفقیت ثبت شد: {res.json()}")
+                logger.info("سفارش خرید بیت‌کوین با موفقیت ثبت شد.")
             else:
-                logger.error(f"خطا در ثبت سفارش خرید (کد {res.status_code}): {res.text}")
+                logger.error(f"خطا در ثبت سفارش خرید: {res.text}")
         except Exception as e:
             logger.error(f"خطا در اجرای خرید: {e}")
 
@@ -139,7 +139,7 @@ def start_server():
 threading.Thread(target=start_server, daemon=True).start()
 
 if __name__ == "__main__":
-    logger.info("--- تست خرید خودکار بیت‌کوین آغاز شد ---")
+    logger.info("--- تست اصلاح‌شده خرید خودکار بیت‌کوین آغاز شد ---")
     price = 60000.0
     if trader.exchange:
         try:
