@@ -6,8 +6,6 @@ import time
 import logging
 import gc
 import json
-import hmac
-import hashlib
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
@@ -15,6 +13,10 @@ from typing import Dict, Optional, List
 import ccxt
 import requests
 from dotenv import load_dotenv
+
+# ایمپورت پکیج اختصاصی صرافی تبدیل
+from tabdeal.spot import Spot
+from tabdeal.enums import OrderSides, OrderTypes
 
 load_dotenv()
 
@@ -56,66 +58,45 @@ class TabdealTrader:
             })
             logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
         except Exception as e:
-            logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
+            logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: گسکت CCXT: {e}")
             self.exchange = None
+
+        # کلاینت اختصاصی صرافی تبدیل برای اتصال و درخواست‌ها
+        try:
+            self.tabdeal_client = Spot(config.TABDEAL_API_KEY, config.TABDEAL_SECRET)
+        except Exception as e:
+            logger.error(f"خطا در راه‌اندازی کلاینت اختصاصی تبدیل: {e}")
+            self.tabdeal_client = None
 
         self.check_order_endpoint_health()
 
-    def _generate_signature(self, query_string: str) -> str:
-        secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
-        message_bytes = query_string.encode('utf-8')
-        return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
-
     def check_order_endpoint_health(self):
         try:
-            url = "https://api1.tabdeal.org/api/v1/order"
-            timestamp = str(int(time.time() * 1000))
-            query_string = f"timestamp={timestamp}"
-            signature = self._generate_signature(query_string)
-            headers = {
-                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                "Content-Type": "application/json"
-            }
-            full_url = f"{url}?{query_string}&signature={signature}"
-            res = requests.get(full_url, headers=headers, timeout=10)
-            
-            if res.status_code in [200, 400, 401, 422]:
-                logger.info(f"وضعیت دسترسی به بخش ثبت سفارش صرافی تبدیل: موفق (کد پاسخ سرور: {res.status_code}) - ارتباط با اندپوینت برقرار است.")
+            if self.tabdeal_client:
+                # تست سلامت با متد account یا سفارشات
+                self.tabdeal_client.account()
+                logger.info("وضعیت دسترسی به بخش حساب و سفارشات صرافی تبدیل: موفق - ارتباط با اندپوینت برقرار است.")
             else:
-                logger.warning(f"هشدار در دسترسی به بخش ثبت سفارش صرافی تبدیل: کد پاسخ غیرمتعارف {res.status_code} - متن: {res.text}")
+                logger.warning("هشدار: کلاینت اختصاصی تبدیل مقداردهی اولیه نشده است.")
         except Exception as e:
-            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش ثبت سفارش صرافی تبدیل در زمان دپلوی: {e}")
+            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش سفارشات صرافی تبدیل در زمان دپلوی: {e}")
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = "https://api1.tabdeal.org/api/v1/account"
-            timestamp = str(int(time.time() * 1000))
-            query_string = f"timestamp={timestamp}"
-            signature = self._generate_signature(query_string)
-            
-            headers = {
-                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                "Content-Type": "application/json"
-            }
-            full_url = f"{url}?{query_string}&signature={signature}"
-
-            res = requests.get(full_url, headers=headers, timeout=10)
-            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - کد پاسخ: {res.status_code}")
-            
-            if res.status_code == 200:
-                response = res.json()
-                logger.info(f"محتوای پاسخ موجودی: {response}")
-                data = response.get('data', response.get('balances', response.get('assets', [])))
-                if isinstance(data, list):
-                    for asset in data:
-                        if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
-                            usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                            return usdt_val
-                return 0.0
-            else:
-                logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
+            if not self.tabdeal_client:
                 return None
+            
+            account = self.tabdeal_client.account()
+            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - حساب دریافت شد")
+            
+            data = account.get('data', account.get('balances', account.get('assets', [])))
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
+            return 0.0
         except Exception as e:
             logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی تبدیل برای دریافت موجودی: {e}")
             return None
@@ -156,8 +137,6 @@ class TabdealTrader:
             self.check_and_update_capital(usdt_balance)
 
             clean_symbol = symbol.replace('/', '')
-            tabdeal_symbol = symbol.replace('/', '_')
-            url = "https://api1.tabdeal.org/api/v1/order"
 
             if side == "BUY":
                 if symbol in self.active_positions:
@@ -182,94 +161,51 @@ class TabdealTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                timestamp = str(int(time.time() * 1000))
+                # استفاده از پکیج SDK تبدیل برای ثبت سفارش خرید
+                order_response = self.tabdeal_client.new_order(
+                    symbol=clean_symbol,
+                    side=OrderSides.BUY,
+                    type=OrderTypes.MARKET,
+                    quantity=amount_str
+                )
                 
-                params = {
-                    "symbol": clean_symbol,
-                    "tabdealSymbol": tabdeal_symbol,
-                    "side": "BUY",
-                    "type": "MARKET",
-                    "quantity": amount_str,
-                    "timestamp": timestamp
+                tp_price = dynamic_tp if dynamic_tp else price * 1.025
+                sl_price = dynamic_sl if dynamic_sl else price * 0.985
+                
+                self.active_positions[symbol] = {
+                    "entry_price": price,
+                    "tp_price": tp_price,
+                    "sl_price": sl_price
                 }
-                
-                query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
-                signature = self._generate_signature(query_string)
-                
-                headers = {
-                    "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                    "Content-Type": "application/json"
-                }
-                
-                full_url = f"{url}?signature={signature}"
-                res = requests.post(full_url, json=params, headers=headers, timeout=10)
-                
-                if res.status_code in [200, 201]:
-                    order_response = res.json()
-                    tp_price = dynamic_tp if dynamic_tp else price * 1.025
-                    sl_price = dynamic_sl if dynamic_sl else price * 0.985
-                    
-                    self.active_positions[symbol] = {
-                        "entry_price": price,
-                        "tp_price": tp_price,
-                        "sl_price": sl_price
-                    }
-                    logger.info(f"سفارش خرید اسپات در تبدیل با موفقیت ثبت شد: {order_response} | TP: {tp_price} | SL: {sl_price}")
-                    return None
-                else:
-                    logger.error(f"خطا در ثبت سفارش خرید در صرافی (کد {res.status_code}): {res.text}")
-                    return None
+                logger.info(f"سفارش خرید اسپات در تبدیل با موفقیت ثبت شد: {order_response} | TP: {tp_price} | SL: {sl_price}")
+                return None
 
             elif side == "SELL":
                 base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    acc_url = "https://api1.tabdeal.org/api/v1/account"
-                    timestamp = str(int(time.time() * 1000))
-                    query_string = f"timestamp={timestamp}"
-                    signature = self._generate_signature(query_string)
-                    headers = {"X-MBX-APIKEY": self.config.TABDEAL_API_KEY, "Content-Type": "application/json"}
-                    full_url = f"{acc_url}?{query_string}&signature={signature}"
-                    res = requests.get(full_url, headers=headers, timeout=10)
-                    if res.status_code == 200:
-                        response = res.json()
-                        data = response.get('data', response.get('balances', response.get('assets', [])))
-                        if isinstance(data, list):
-                            for asset in data:
-                                if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
-                                    base_free = float(asset.get('free', asset.get('balance', 0.0)))
-                                    break
-                    else:
-                        logger.error(f"خطای ارتباط با صرافی در استعلام دارایی پایه برای فروش (کد پاسخ {res.status_code})")
+                    account = self.tabdeal_client.account()
+                    data = account.get('data', account.get('balances', account.get('assets', [])))
+                    if isinstance(data, list):
+                        for asset in data:
+                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
+                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                                break
                 except Exception as e:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش: {e}")
                 
                 if base_free > 0:
                     amount_str = f"{base_free:.6f}"
-                    timestamp = str(int(time.time() * 1000))
                     
-                    params = {
-                        "symbol": clean_symbol,
-                        "tabdealSymbol": tabdeal_symbol,
-                        "side": "SELL",
-                        "type": "MARKET",
-                        "quantity": amount_str,
-                        "timestamp": timestamp
-                    }
-                    
-                    query_string = f"quantity={amount_str}&side=SELL&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
-                    signature = self._generate_signature(query_string)
-                    
-                    headers = {
-                        "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                        "Content-Type": "application/json"
-                    }
-                    full_url = f"{url}?signature={signature}"
-                    res = requests.post(full_url, json=params, headers=headers, timeout=10)
-                    
-                    # مرحله اول: بررسی موفقیت فروش مستقیم
-                    if res.status_code in [200, 201]:
-                        order_response = res.json()
+                    try:
+                        # مرحله اول: تلاش برای فروش مستقیم با پکیج SDK
+                        order_response = self.tabdeal_client.new_order(
+                            symbol=clean_symbol,
+                            side=OrderSides.SELL,
+                            type=OrderTypes.MARKET,
+                            quantity=amount_str
+                        )
+                        
                         pnl_percent = 0.0
                         if symbol in self.active_positions:
                             entry_price = self.active_positions[symbol]["entry_price"]
@@ -284,43 +220,31 @@ class TabdealTrader:
                             "exit_price": price,
                             "pnl": round(pnl_percent, 2)
                         }
-                    else:
-                        # اگر فروش مستقیم به خاطر محدودیت صرافی خطا داد، استفاده از روش جایگزین (کلک هوشمند/خرید تتر با دارایی موجود)
-                        logger.warning(f"فروش مستقیم موفق نبود (خطای صرافی: {res.text}). تلاش از طریق روش جایگزین (خرید/تبدیل)...")
+                    except Exception as direct_err:
+                        # اگر فروش مستقیم به خاطر محدودیت صرافی خطا داد، استفاده از روش جایگزین (خرید معکوس با دارایی موجود)
+                        logger.warning(f"فروش مستقیم موفق نبود (خطای صرافی: {direct_err}). تلاش از طریق روش جایگزین (خرید/تبدیل)...")
                         try:
-                            alt_timestamp = str(int(time.time() * 1000))
-                            alt_params = {
-                                "symbol": clean_symbol,
-                                "tabdealSymbol": tabdeal_symbol,
-                                "side": "BUY",  # استفاده از مسیر جایگزین خرید/تبدیل معکوس مطابق ترفند شما
-                                "type": "MARKET",
-                                "quantity": amount_str,
-                                "timestamp": alt_timestamp
-                            }
-                            alt_query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={alt_timestamp}&type=MARKET"
-                            alt_signature = self._generate_signature(alt_query_string)
-                            alt_full_url = f"{url}?signature={alt_signature}"
+                            alt_order_response = self.tabdeal_client.new_order(
+                                symbol=clean_symbol,
+                                side=OrderSides.BUY,
+                                type=OrderTypes.MARKET,
+                                quantity=amount_str
+                            )
                             
-                            alt_res = requests.post(alt_full_url, json=alt_params, headers=headers, timeout=10)
-                            if alt_res.status_code in [200, 201]:
-                                alt_order_response = alt_res.json()
-                                pnl_percent = 0.0
-                                if symbol in self.active_positions:
-                                    entry_price = self.active_positions[symbol]["entry_price"]
-                                    pnl_percent = ((price - entry_price) / entry_price) * 100
-                                    del self.active_positions[symbol]
+                            pnl_percent = 0.0
+                            if symbol in self.active_positions:
+                                entry_price = self.active_positions[symbol]["entry_price"]
+                                pnl_percent = ((price - entry_price) / entry_price) * 100
+                                del self.active_positions[symbol]
 
-                                logger.info(f"سفارش از طریق مسیر جایگزین (تبدیل) با موفقیت انجام شد: {alt_order_response} | سود/زیان: {pnl_percent:.2f}%")
-                                return {
-                                    "action": "close_trade",
-                                    "symbol": symbol,
-                                    "side": "SELL",
-                                    "exit_price": price,
-                                    "pnl": round(pnl_percent, 2)
-                                }
-                            else:
-                                logger.error(f"خطا در روش جایگزین صرافی (کد {alt_res.status_code}): {alt_res.text}")
-                                return None
+                            logger.info(f"سفارش از طریق مسیر جایگزین (تبدیل) با موفقیت انجام شد: {alt_order_response} | سود/زیان: {pnl_percent:.2f}%")
+                            return {
+                                "action": "close_trade",
+                                "symbol": symbol,
+                                "side": "SELL",
+                                "exit_price": price,
+                                "pnl": round(pnl_percent, 2)
+                            }
                         except Exception as alt_ex:
                             logger.error(f"خطای استثناء در اجرای روش جایگزین فروش: {alt_ex}")
                             return None
