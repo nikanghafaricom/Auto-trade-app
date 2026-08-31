@@ -13,7 +13,10 @@ if __name__ == "__main__":
     try:
         print("در حال تست اتصال به صرافی...")
         client = Spot(API_KEY, API_SECRET)
-        account_info = client.get_account()
-        print(f"✅ اتصال موفق بود! نتیجه: {account_info}")
+        
+        # استفاده از متد استاندارد کتابخانه برای دریافت اطلاعات حساب
+        account_info = client.account()
+        print(f"✅ اتصال و احراز هویت کاملاً موفق بود! نتیجه:\n{account_info}")
+        
     except Exception as e:
         print(f"❌ خطا رخ داد: {e}")
