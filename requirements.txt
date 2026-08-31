@@ -1,4 +1,4 @@
-tabdeal
+tabdeal-python
 ccxt-ir
 pandas
 requests
