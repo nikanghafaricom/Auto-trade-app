@@ -1,151 +1,77 @@
 # ==============================================
-# Hybrid Signal Bot - نسخه اصلاح شده ۱: فقط خرید (BUY)
+# Tabdeal Test Bot - 1. BUY BTC
 # ==============================================
 import os
 import time
 import logging
-import json
 import hmac
 import hashlib
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional
-import ccxt
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[logging.FileHandler("trading_signals.log", encoding='utf-8'), logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
 
-class Config:
-    TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
-    TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
+API_KEY = os.getenv("TABDEAL_API_KEY", "")
+API_SECRET = os.getenv("TABDEAL_SECRET", "")
 
-class TabdealTrader:
-    def __init__(self, config: Config):
-        self.config = config
-        try:
-            self.exchange = ccxt.tabdeal({
-                'apiKey': config.TABDEAL_API_KEY,
-                'secret': config.TABDEAL_SECRET,
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
-            })
-            logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
-        except Exception as e:
-            logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
+def generate_signature(query_string: str) -> str:
+    return hmac.new(API_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
 
-    def _generate_signature(self, query_string: str) -> str:
-        secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
-        message_bytes = query_string.encode('utf-8')
-        return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
+def get_usdt_balance() -> float:
+    try:
+        url = "https://api1.tabdeal.org/api/v1/account"
+        timestamp = str(int(time.time() * 1000))
+        query_string = f"timestamp={timestamp}"
+        signature = generate_signature(query_string)
+        
+        headers = {"X-MBX-APIKEY": API_KEY, "Content-Type": "application/json"}
+        res = requests.get(f"{url}?{query_string}&signature={signature}", headers=headers, timeout=10)
+        
+        if res.status_code == 200:
+            data = res.json().get('data', res.json().get('balances', []))
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                        return float(asset.get('free', asset.get('balance', 0.0)))
+        return 0.0
+    except Exception as e:
+        logger.error(f"خطا در دریافت موجودی: {e}")
+        return 0.0
 
-    def get_usdt_balance(self) -> Optional[float]:
-        try:
-            url = "https://api1.tabdeal.org/api/v1/account"
-            timestamp = str(int(time.time() * 1000))
-            query_string = f"timestamp={timestamp}"
-            signature = self._generate_signature(query_string)
-            headers = {"X-MBX-APIKEY": self.config.TABDEAL_API_KEY, "Content-Type": "application/json"}
-            full_url = f"{url}?{query_string}&signature={signature}"
-
-            res = requests.get(full_url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                response = res.json()
-                data = response.get('data', response.get('balances', response.get('assets', [])))
-                if isinstance(data, list):
-                    for asset in data:
-                        if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
-                            usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                            return usdt_val
-                return 0.0
-            else:
-                logger.error(f"خطا در دریافت موجودی (کد {res.status_code}): {res.text}")
-                return None
-        except Exception as e:
-            logger.error(f"خطا در ارتباط با صرافی برای دریافت موجودی: {e}")
-            return None
-
-    def execute_spot_order(self, symbol: str, side: str, price: float):
-        try:
-            usdt_balance = self.get_usdt_balance()
-            if usdt_balance is None or usdt_balance < 1.0:
-                logger.error("موجودی تتر کافی نیست یا خطا در دریافت موجودی.")
-                return None
-
-            clean_symbol = symbol.replace('/', '')
-            tabdeal_symbol = symbol.replace('/', '_')
-            url = "https://api1.tabdeal.org/api/v1/order"
-
-            allocated_budget = usdt_balance * 0.20
-            if allocated_budget < 1.0:
-                allocated_budget = 1.0
-
-            amount_to_buy = allocated_budget / price
-            amount_str = f"{amount_to_buy:.6f}"
-            timestamp = str(int(time.time() * 1000))
-            
-            # مرتب‌سازی پارامترها به صورت الفبایی برای ساخت صحیح Query String
-            query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
-            signature = self._generate_signature(query_string)
-            
-            headers = {
-                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            
-            # ارسال پارامترها به صورت فرم‌دیتا در بدنه درخواست به همراه امضا در URL
-            payload = {
-                "symbol": clean_symbol,
-                "tabdealSymbol": tabdeal_symbol,
-                "side": "BUY",
-                "type": "MARKET",
-                "quantity": amount_str,
-                "timestamp": timestamp
-            }
-            
-            full_url = f"{url}?{query_string}&signature={signature}"
-            res = requests.post(full_url, data=payload, headers=headers, timeout=10)
-            
-            logger.info(f"کد پاسخ صرافی برای خرید: {res.status_code} | متن پاسخ: {res.text}")
-            if res.status_code in [200, 201]:
-                logger.info("سفارش خرید بیت‌کوین با موفقیت ثبت شد.")
-            else:
-                logger.error(f"خطا در ثبت سفارش خرید: {res.text}")
-        except Exception as e:
-            logger.error(f"خطا در اجرای خرید: {e}")
-
-config = Config()
-trader = TabdealTrader(config)
-
-class HamraveshWebhookHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
-    def log_message(self, format, *args):
+def buy_btc():
+    usdt = get_usdt_balance()
+    logger.info(f"موجودی تتر فعلی: {usdt}")
+    if usdt < 1.0:
+        logger.error("موجودی تتر برای خرید کافی نیست.")
         return
 
-def start_server():
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), HamraveshWebhookHandler).serve_forever()
+    # تخصیص ۲۰ درصد موجودی برای خرید تستی
+    budget = usdt * 0.20
+    if budget < 1.0: budget = 1.0
+    
+    # گرفتن قیمت لحظه‌ای
+    try:
+        ticker = requests.get("https://api1.tabdeal.org/api/v1/ticker/24hr?symbol=BTC_USDT", timeout=5).json()
+        price = float(ticker.get('lastPrice', ticker.get('last', 60000)))
+    except:
+        price = 60000.0
 
-threading.Thread(target=start_server, daemon=True).start()
+    quantity = f"{budget / price:.6f}"
+    timestamp = str(int(time.time() * 1000))
+    
+    # ساخت دقیق Query String طبق مستندات صرافی
+    query_params = f"quantity={quantity}&side=BUY&symbol=BTCUSDT&tabdealSymbol=BTC_USDT&timestamp={timestamp}&type=MARKET"
+    signature = generate_signature(query_params)
+    
+    url = f"https://api1.tabdeal.org/api/v1/order?{query_params}&signature={signature}"
+    headers = {"X-MBX-APIKEY": API_KEY, "Content-Type": "application/json"}
+    
+    res = requests.post(url, headers=headers, timeout=10)
+    logger.info(f"پاسخ صرافی برای خرید: {res.status_code} - {res.text}")
 
 if __name__ == "__main__":
-    logger.info("--- تست اصلاح‌شده خرید خودکار بیت‌کوین آغاز شد ---")
-    price = 60000.0
-    if trader.exchange:
-        try:
-            price = float(trader.exchange.fetch_ticker("BTC/USDT")['last'])
-        except:
-            pass
-    trader.execute_spot_order("BTC/USDT", "BUY", price)
-    while True:
-        time.sleep(30)
+    logger.info("تست خرید آغاز شد...")
+    buy_btc()
