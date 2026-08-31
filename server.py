@@ -27,20 +27,20 @@ if __name__ == "__main__":
                 
         print(f"موجودی بیت‌کوین آزاد شما: {btc_free}")
         
-        if btc_free <= 0.00001:
-            print("❌ موجودی بیت‌کوین برای فروش کافی نیست.")
+        if btc_free <= 0:
+            print("❌ موجودی بیت‌کوین صفر است.")
         else:
-            # مشخص کردن دقیق مقدار برای فروش
-            quantity = f"{btc_free:.5f}"
+            # ارسال دقیق کل موجودی بدون تغییر اعشار به صرافی
+            quantity = str(btc_free)
             
-            print(f"ارسال سفارش فروش بازار (SELL) برای {quantity} بیت‌کوین...")
+            print(f"ارسال سفارش فروش بازار (SELL) برای کل مقدار ({quantity})...")
             order = client.new_order(
                 symbol='BTCUSDT',
                 side=OrderSides.SELL,
                 type=OrderTypes.MARKET,
                 quantity=quantity
             )
-            print(f"✅ بیت‌کوین با موفقیت فروخته شد و به تتر تبدیل شد!\n{order}")
+            print(f"✅ با موفقیت فروخته شد!\n{order}")
         
     except Exception as e:
         print(f"❌ خطا در اجرای فروش: {e}")
