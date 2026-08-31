@@ -6,6 +6,8 @@ import time
 import logging
 import gc
 import json
+import hmac
+import hashlib
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
@@ -14,7 +16,7 @@ import ccxt
 import requests
 from dotenv import load_dotenv
 
-# ایمپورت پکیج اختصاصی صرافی تبدیل
+# ایمپورت پکیج اختصاصی صرافی تبدیل (برای سایر بخش‌های سفارشی که استفاده کردید)
 from tabdeal.spot import Spot
 from tabdeal.enums import OrderSides, OrderTypes
 
@@ -70,10 +72,14 @@ class TabdealTrader:
 
         self.check_order_endpoint_health()
 
+    def _generate_signature(self, query_string: str) -> str:
+        secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
+        message_bytes = query_string.encode('utf-8')
+        return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
+
     def check_order_endpoint_health(self):
         try:
             if self.tabdeal_client:
-                # تست سلامت با متد account یا سفارشات
                 self.tabdeal_client.account()
                 logger.info("وضعیت دسترسی به بخش حساب و سفارشات صرافی تبدیل: موفق - ارتباط با اندپوینت برقرار است.")
             else:
@@ -83,20 +89,34 @@ class TabdealTrader:
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            if not self.tabdeal_client:
+            url = "https://api1.tabdeal.org/api/v1/account"
+            timestamp = str(int(time.time() * 1000))
+            query_string = f"timestamp={timestamp}"
+            signature = self._generate_signature(query_string)
+            
+            headers = {
+                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
+                "Content-Type": "application/json"
+            }
+            full_url = f"{url}?{query_string}&signature={signature}"
+
+            res = requests.get(full_url, headers=headers, timeout=10)
+            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - کد پاسخ: {res.status_code}")
+            
+            if res.status_code == 200:
+                response = res.json()
+                logger.info(f"محتوای پاسخ موجودی: {response}")
+                data = response.get('data', response.get('balances', response.get('assets', [])))
+                if isinstance(data, list):
+                    for asset in data:
+                        if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
+                            usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
+                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                            return usdt_val
+                return 0.0
+            else:
+                logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
                 return None
-            
-            account = self.tabdeal_client.account()
-            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - حساب دریافت شد")
-            
-            data = account.get('data', account.get('balances', account.get('assets', [])))
-            if isinstance(data, list):
-                for asset in data:
-                    if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
-                        usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                        return usdt_val
-            return 0.0
         except Exception as e:
             logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی تبدیل برای دریافت موجودی: {e}")
             return None
