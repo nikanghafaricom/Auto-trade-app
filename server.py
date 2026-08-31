@@ -29,8 +29,8 @@ if __name__ == "__main__":
         if btc_free <= 0:
             print("❌ موجودی بیت‌کوین صفر است.")
         else:
-            # تبدیل دقیق عدد به رشته استاندارد بدون نماد علمی (تا ۸ رقم اعشار)
-            quantity = f"{btc_free:.8f}".rstrip('0').rstrip('.')
+            # استفاده از قالب دقیقاً مشابه بخش خرید با مشخص کردن ثابت اعشار
+            quantity = "{:.8f}".format(btc_free)
             
             print(f"ارسال سفارش فروش بازار (SELL) برای مقدار ({quantity})...")
             order = client.new_order(
