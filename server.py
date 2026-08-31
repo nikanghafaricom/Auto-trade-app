@@ -59,7 +59,6 @@ class TabdealTrader:
             logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: {e}")
             self.exchange = None
 
-        # بررسی دسترسی اولیه به بخش ثبت سفارش صرافی (تست سلامت دپلوی)
         self.check_order_endpoint_health()
 
     def _generate_signature(self, query_string: str) -> str:
@@ -71,7 +70,6 @@ class TabdealTrader:
         try:
             url = "https://api1.tabdeal.org/api/v1/order"
             timestamp = str(int(time.time() * 1000))
-            # یک تست سبک یا ارسال پارامتر آزمایشی معتبر/نیمه معتبر برای بررسی دسترسی و احراز هویت اندپوینت سفارش
             query_string = f"timestamp={timestamp}"
             signature = self._generate_signature(query_string)
             headers = {
@@ -79,10 +77,8 @@ class TabdealTrader:
                 "Content-Type": "application/json"
             }
             full_url = f"{url}?{query_string}&signature={signature}"
-            # درخواست GET یا تستی به مسیر سفارشات برای سنجش دسترسی (اگر متد GET پشتیبانی نشود یا خطای پارامتر بدهد یعنی به سرور رسیده است)
             res = requests.get(full_url, headers=headers, timeout=10)
             
-            # اگر خطای احراز هویت یا پارامتر باشد یعنی ارتباط شبکه و اندپوینت برقرار است، اگر خطای اتصال/404 باشد یعنی مشکل دسترسی داریم
             if res.status_code in [200, 400, 401, 422]:
                 logger.info(f"وضعیت دسترسی به بخش ثبت سفارش صرافی تبدیل: موفق (کد پاسخ سرور: {res.status_code}) - ارتباط با اندپوینت برقرار است.")
             else:
@@ -187,6 +183,8 @@ class TabdealTrader:
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
                 timestamp = str(int(time.time() * 1000))
+                
+                # تنظیم پارامترها دقیقاً مطابق مستندات صرافی تبدیل برای ارسال درخواست POST
                 query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
                 signature = self._generate_signature(query_string)
                 
@@ -198,7 +196,7 @@ class TabdealTrader:
                 full_url = f"{url}?{query_string}&signature={signature}"
                 res = requests.post(full_url, headers=headers, timeout=10)
                 
-                if res.status_code == 200 or res.status_code == 201:
+                if res.status_code in [200, 201]:
                     order_response = res.json()
                     tp_price = dynamic_tp if dynamic_tp else price * 1.025
                     sl_price = dynamic_sl if dynamic_sl else price * 0.985
@@ -252,7 +250,7 @@ class TabdealTrader:
                     full_url = f"{url}?{query_string}&signature={signature}"
                     res = requests.post(full_url, headers=headers, timeout=10)
                     
-                    if res.status_code == 200 or res.status_code == 201:
+                    if res.status_code in [200, 201]:
                         order_response = res.json()
                         pnl_percent = 0.0
                         if symbol in self.active_positions:
