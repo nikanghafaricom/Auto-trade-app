@@ -1,3 +1,4 @@
+tabdeal
 ccxt-ir
 pandas
 requests
