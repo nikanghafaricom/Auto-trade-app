@@ -184,7 +184,16 @@ class TabdealTrader:
 
                 timestamp = str(int(time.time() * 1000))
                 
-                # تنظیم پارامترها دقیقاً مطابق مستندات صرافی تبدیل برای ارسال درخواست POST
+                # تنظیم پارامترها هم برای بدنه درخواست (JSON Body) و هم برای ساخت Signature
+                params = {
+                    "symbol": clean_symbol,
+                    "tabdealSymbol": tabdeal_symbol,
+                    "side": "BUY",
+                    "type": "MARKET",
+                    "quantity": amount_str,
+                    "timestamp": timestamp
+                }
+                
                 query_string = f"quantity={amount_str}&side=BUY&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
                 signature = self._generate_signature(query_string)
                 
@@ -193,8 +202,8 @@ class TabdealTrader:
                     "Content-Type": "application/json"
                 }
                 
-                full_url = f"{url}?{query_string}&signature={signature}"
-                res = requests.post(full_url, headers=headers, timeout=10)
+                full_url = f"{url}?signature={signature}"
+                res = requests.post(full_url, json=params, headers=headers, timeout=10)
                 
                 if res.status_code in [200, 201]:
                     order_response = res.json()
@@ -240,6 +249,15 @@ class TabdealTrader:
                     amount_str = f"{base_free:.6f}"
                     timestamp = str(int(time.time() * 1000))
                     
+                    params = {
+                        "symbol": clean_symbol,
+                        "tabdealSymbol": tabdeal_symbol,
+                        "side": "SELL",
+                        "type": "MARKET",
+                        "quantity": amount_str,
+                        "timestamp": timestamp
+                    }
+                    
                     query_string = f"quantity={amount_str}&side=SELL&symbol={clean_symbol}&tabdealSymbol={tabdeal_symbol}&timestamp={timestamp}&type=MARKET"
                     signature = self._generate_signature(query_string)
                     
@@ -247,8 +265,8 @@ class TabdealTrader:
                         "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
                         "Content-Type": "application/json"
                     }
-                    full_url = f"{url}?{query_string}&signature={signature}"
-                    res = requests.post(full_url, headers=headers, timeout=10)
+                    full_url = f"{url}?signature={signature}"
+                    res = requests.post(full_url, json=params, headers=headers, timeout=10)
                     
                     if res.status_code in [200, 201]:
                         order_response = res.json()
