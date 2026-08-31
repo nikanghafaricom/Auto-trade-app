@@ -1,6 +1,7 @@
 import os
 import logging
 from tabdeal.spot import Spot
+from tabdeal.enums import OrderSides, OrderTypes
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,12 +12,18 @@ API_SECRET = os.getenv("TABDEAL_SECRET", "")
 
 if __name__ == "__main__":
     try:
-        print("در حال تست اتصال به صرافی...")
+        print("در حال ارسال سفارش خرید تستی...")
         client = Spot(API_KEY, API_SECRET)
         
-        # استفاده از متد استاندارد کتابخانه برای دریافت اطلاعات حساب
-        account_info = client.account()
-        print(f"✅ اتصال و احراز هویت کاملاً موفق بود! نتیجه:\n{account_info}")
+        # ثبت سفارش خرید با کتابخانه رسمی
+        # نماد و مقدار بر اساس موجودی تتر شما تنظیم شده است
+        order = client.new_order(
+            symbol='BTCUSDT',
+            side=OrderSides.BUY,
+            type=OrderTypes.MARKET,
+            quantity="0.0001"  # مقدار بسیار کم برای تست
+        )
+        print(f"✅ سفارش خرید با موفقیت ثبت شد!\n{order}")
         
     except Exception as e:
-        print(f"❌ خطا رخ داد: {e}")
+        print(f"❌ خطا در ثبت سفارش: {e}")
