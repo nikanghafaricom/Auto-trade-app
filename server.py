@@ -15,7 +15,6 @@ if __name__ == "__main__":
         print("در حال بررسی موجودی بیت‌کوین برای فروش...")
         client = Spot(API_KEY, API_SECRET)
         
-        # ۱. گرفتن موجودی حساب
         account = client.account()
         balances = account.get('balances', [])
         
@@ -30,10 +29,10 @@ if __name__ == "__main__":
         if btc_free <= 0:
             print("❌ موجودی بیت‌کوین صفر است.")
         else:
-            # ارسال دقیق کل موجودی بدون تغییر اعشار به صرافی
-            quantity = str(btc_free)
+            # تبدیل دقیق عدد به رشته استاندارد بدون نماد علمی (تا ۸ رقم اعشار)
+            quantity = f"{btc_free:.8f}".rstrip('0').rstrip('.')
             
-            print(f"ارسال سفارش فروش بازار (SELL) برای کل مقدار ({quantity})...")
+            print(f"ارسال سفارش فروش بازار (SELL) برای مقدار ({quantity})...")
             order = client.new_order(
                 symbol='BTCUSDT',
                 side=OrderSides.SELL,
