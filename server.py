@@ -175,7 +175,8 @@ class TabdealTrader:
 
             self.check_and_update_capital(usdt_balance)
 
-            clean_symbol = symbol.replace('/', '')
+            # اصلاح فرمت نماد با خط زیرین برای سازگاری کامل با پکیج صرافی تبدیل
+            clean_symbol = symbol.replace('/', '_')
 
             if side == "BUY":
                 if symbol in self.active_positions:
