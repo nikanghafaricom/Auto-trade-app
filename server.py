@@ -307,6 +307,12 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Hamravesh Bot is alive and running!")
 
+    def do_HEAD(self):
+        # پشتیبانی از متد HEAD که مانیتورها (مثل UptimeRobot) برای پینگ استفاده می‌کنند
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+
     def do_POST(self):
         global trader, notifier, config
         try:
