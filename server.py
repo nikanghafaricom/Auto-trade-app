@@ -49,7 +49,8 @@ class TabdealTrader:
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
-        self.active_positions = {}
+        self.positions_file = "active_positions.json"
+        self.active_positions = self.load_positions()
         
         try:
             self.exchange = ccxt.tabdeal({
@@ -71,6 +72,24 @@ class TabdealTrader:
             self.tabdeal_client = None
 
         self.check_order_endpoint_health()
+
+    def load_positions(self) -> dict:
+        if os.path.exists(self.positions_file):
+            try:
+                with open(self.positions_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    logger.info(f"پوزیشن‌های باز قبلی با موفقیت از فایل بارگذاری شدند: {list(data.keys())}")
+                    return data
+            except Exception as e:
+                logger.error(f"خطا در خواندن فایل پوزیشن‌ها: {e}")
+        return {}
+
+    def save_positions(self):
+        try:
+            with open(self.positions_file, 'w', encoding='utf-8') as f:
+                json.dump(self.active_positions, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"خطا در ذخیره فایل پوزیشن‌ها: {e}")
 
     def _generate_signature(self, query_string: str) -> str:
         secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
@@ -197,6 +216,8 @@ class TabdealTrader:
                     "tp_price": tp_price,
                     "sl_price": sl_price
                 }
+                self.save_positions()
+                
                 logger.info(f"سفارش خرید اسپات در تبدیل با موفقیت ثبت شد: {order_response} | TP: {tp_price} | SL: {sl_price}")
                 return None
 
@@ -231,6 +252,7 @@ class TabdealTrader:
                             entry_price = self.active_positions[symbol]["entry_price"]
                             pnl_percent = ((price - entry_price) / entry_price) * 100
                             del self.active_positions[symbol]
+                            self.save_positions()
 
                         logger.info(f"سفارش فروش اسپات در تبدیل با موفقیت ثبت شد: {order_response} | سود/زیان: {pnl_percent:.2f}%")
                         return {
@@ -256,6 +278,7 @@ class TabdealTrader:
                                 entry_price = self.active_positions[symbol]["entry_price"]
                                 pnl_percent = ((price - entry_price) / entry_price) * 100
                                 del self.active_positions[symbol]
+                                self.save_positions()
 
                             logger.info(f"سفارش از طریق مسیر جایگزین (تبدیل) با موفقیت انجام شد: {alt_order_response} | سود/زیان: {pnl_percent:.2f}%")
                             return {
@@ -272,6 +295,7 @@ class TabdealTrader:
                     logger.warning(f"دارایی کافی از ارز {base_currency} برای فروش موجود نیست.")
                     if symbol in self.active_positions:
                         del self.active_positions[symbol]
+                        self.save_positions()
                     return None
 
         except Exception as e:
