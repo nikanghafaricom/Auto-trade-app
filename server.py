@@ -46,7 +46,7 @@ class AbanTetherTrader:
         self.last_capital_reset_time = None
         self.positions_file = "active_positions.json"
         self.active_positions = self.load_positions()
-        self.base_url = "https://api.abantether.com"
+        self.base_url = "https://abantether.com/api/v1"
         
         try:
             self.exchange = ccxt.coinex({
@@ -80,10 +80,9 @@ class AbanTetherTrader:
 
     def check_order_endpoint_health(self):
         try:
-            url = f"{self.base_url}/accounting/balances"
+            url = f"{self.base_url}/users/balance/"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            params = {"type": "spot"}
-            res = requests.get(url, headers=headers, params=params, timeout=10)
+            res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی آبان‌تتر: موفق - ارتباط با اندپوینت برقرار است.")
             else:
@@ -93,10 +92,9 @@ class AbanTetherTrader:
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = f"{self.base_url}/accounting/balances"
+            url = f"{self.base_url}/users/balance/"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            params = {"type": "spot"}
-            res = requests.get(url, headers=headers, params=params, timeout=10)
+            res = requests.get(url, headers=headers, timeout=10)
             logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
             
             if res.status_code == 200:
@@ -105,7 +103,7 @@ class AbanTetherTrader:
                 balances_list = response if isinstance(response, list) else response.get('data', [])
                 for asset in balances_list:
                     if asset.get('symbol', '').upper() == 'USDT':
-                        usdt_val = float(asset.get('available', asset.get('balance', 0.0)))
+                        usdt_val = float(asset.get('balance', 0.0))
                         logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
                         return usdt_val
                 return 0.0
@@ -173,16 +171,15 @@ class AbanTetherTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                url = f"{self.base_url}/order_handler/orders/otc/market"
+                url = f"{self.base_url}/otc/orders/buy/"
                 headers = {
                     "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 payload = {
-                    "side": "buy",
-                    "base_symbol": base_symbol,
-                    "quote_symbol": "USDT",
-                    "volume": float(allocated_budget)
+                    "coin": base_symbol,
+                    "quote": float(allocated_budget),
+                    "currency": "USDT"
                 }
 
                 response = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -207,31 +204,29 @@ class AbanTetherTrader:
             elif side == "SELL":
                 base_free = 0.0
                 try:
-                    url = f"{self.base_url}/accounting/balances"
+                    url = f"{self.base_url}/users/balance/"
                     headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-                    params = {"type": "spot", "symbols": base_symbol}
-                    res = requests.get(url, headers=headers, params=params, timeout=10)
+                    res = requests.get(url, headers=headers, timeout=10)
                     if res.status_code == 200:
                         res_json = res.json()
                         balances_list = res_json if isinstance(res_json, list) else res_json.get('data', [])
                         for asset in balances_list:
                             if asset.get('symbol', '').upper() == base_symbol.upper():
-                                base_free = float(asset.get('available', asset.get('balance', 0.0)))
+                                base_free = float(asset.get('balance', 0.0))
                                 break
                 except Exception as e:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در آبان‌تتر: {e}")
                 
                 if base_free > 0:
-                    url = f"{self.base_url}/order_handler/orders/otc/market"
+                    url = f"{self.base_url}/otc/orders/sell/"
                     headers = {
                         "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
                         "Content-Type": "application/json"
                     }
                     payload = {
-                        "side": "sell",
-                        "base_symbol": base_symbol,
-                        "quote_symbol": "USDT",
-                        "volume": float(base_free)
+                        "coin": base_symbol,
+                        "quantity": float(base_free),
+                        "currency": "USDT"
                     }
 
                     response = requests.post(url, headers=headers, json=payload, timeout=15)
