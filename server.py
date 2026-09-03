@@ -16,10 +16,6 @@ import ccxt
 import requests
 from dotenv import load_dotenv
 
-# ایمپورت پکیج اختصاصی صرافی تبدیل (برای سایر بخش‌های سفارشی که استفاده کردید)
-from tabdeal.spot import Spot
-from tabdeal.enums import OrderSides, OrderTypes
-
 load_dotenv()
 
 # ==================== لاگ ====================
@@ -35,41 +31,32 @@ logger = logging.getLogger(__name__)
 
 # ==================== تنظیمات ====================
 class Config:
-    TABDEAL_API_KEY = os.getenv("TABDEAL_API_KEY", "")
-    TABDEAL_SECRET = os.getenv("TABDEAL_SECRET", "")
+    ABANTETHER_API_KEY = os.getenv("ABANTETHER_API_KEY", "")
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
     SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
     def validate(self):
         pass
 
-# ==================== مدیریت معاملات با همگام‌سازی خودکار صرافی ====================
-class TabdealTrader:
+# ==================== مدیریت معاملات با همگام‌سازی خودکار صرافی (آبان‌تتر) ====================
+class AbanTetherTrader:
     def __init__(self, config: Config):
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
         self.positions_file = "active_positions.json"
         self.active_positions = self.load_positions()
+        self.base_url = "https://api.abantether.com"
         
         try:
-            self.exchange = ccxt.tabdeal({
-                'apiKey': config.TABDEAL_API_KEY,
-                'secret': config.TABDEAL_SECRET,
+            self.exchange = ccxt.coinex({
                 'enableRateLimit': True,
                 'options': {'defaultType': 'spot'}
             })
-            logger.info("اتصال به صرافی تبدیل با موفقیت راه‌اندازی شد.")
+            logger.info("اتصال به صرافی جهت دریافت قیمت‌های لحظه‌ای بازار با موفقیت راه‌اندازی شد.")
         except Exception as e:
-            logger.error(f"خطا در راه‌اندازی اتصال به صرافی تبدیل: گسکت CCXT: {e}")
+            logger.error(f"خطا در راه‌اندازی اتصال قیمت بازار: {e}")
             self.exchange = None
-
-        # کلاینت اختصاصی صرافی تبدیل برای اتصال و درخواست‌ها
-        try:
-            self.tabdeal_client = Spot(config.TABDEAL_API_KEY, config.TABDEAL_SECRET)
-        except Exception as e:
-            logger.error(f"خطا در راه‌اندازی کلاینت اختصاصی تبدیل: {e}")
-            self.tabdeal_client = None
 
         self.check_order_endpoint_health()
 
@@ -91,53 +78,40 @@ class TabdealTrader:
         except Exception as e:
             logger.error(f"خطا در ذخیره فایل پوزیشن‌ها: {e}")
 
-    def _generate_signature(self, query_string: str) -> str:
-        secret_bytes = self.config.TABDEAL_SECRET.encode('utf-8')
-        message_bytes = query_string.encode('utf-8')
-        return hmac.new(secret_bytes, message_bytes, hashlib.sha256).hexdigest()
-
     def check_order_endpoint_health(self):
         try:
-            if self.tabdeal_client:
-                self.tabdeal_client.account()
-                logger.info("وضعیت دسترسی به بخش حساب و سفارشات صرافی تبدیل: موفق - ارتباط با اندپوینت برقرار است.")
+            url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
+            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی آبان‌تتر: موفق - ارتباط با اندپوینت برقرار است.")
             else:
-                logger.warning("هشدار: کلاینت اختصاصی تبدیل مقداردهی اولیه نشده است.")
+                logger.warning(f"هشدار: پاسخ غیرمنتظره از آبان‌تتر در تست سلامت (کد {res.status_code}): {res.text}")
         except Exception as e:
-            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش سفارشات صرافی تبدیل در زمان دپلوی: {e}")
+            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش سفارشات صرافی آبان‌تتر در زمان دپلوی: {e}")
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = "https://api1.tabdeal.org/api/v1/account"
-            timestamp = str(int(time.time() * 1000))
-            query_string = f"timestamp={timestamp}"
-            signature = self._generate_signature(query_string)
-            
-            headers = {
-                "X-MBX-APIKEY": self.config.TABDEAL_API_KEY,
-                "Content-Type": "application/json"
-            }
-            full_url = f"{url}?{query_string}&signature={signature}"
-
-            res = requests.get(full_url, headers=headers, timeout=10)
-            logger.info(f"پاسخ دیاگ لحظه‌ای API تبدیل - کد پاسخ: {res.status_code}")
+            url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
+            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+            res = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
             
             if res.status_code == 200:
                 response = res.json()
                 logger.info(f"محتوای پاسخ موجودی: {response}")
-                data = response.get('data', response.get('balances', response.get('assets', [])))
-                if isinstance(data, list):
-                    for asset in data:
-                        if asset.get('currency', '').upper() == 'USDT' or asset.get('asset', '').upper() == 'USDT':
-                            usdt_val = float(asset.get('free', asset.get('balance', 0.0)))
-                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                            return usdt_val
+                balances_list = response if isinstance(response, list) else response.get('data', [])
+                for asset in balances_list:
+                    if asset.get('symbol', '').upper() == 'USDT':
+                        usdt_val = float(asset.get('available', asset.get('balance', 0.0)))
+                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                        return usdt_val
                 return 0.0
             else:
                 logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
                 return None
         except Exception as e:
-            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی تبدیل برای دریافت موجودی: {e}")
+            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی آبان‌تتر برای دریافت موجودی: {e}")
             return None
 
     def check_and_update_capital(self, current_balance: float):
@@ -170,13 +144,12 @@ class TabdealTrader:
         try:
             usdt_balance = self.get_usdt_balance()
             if usdt_balance is None:
-                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی تبدیل جهت استعلام موجودی وجود نداشت.")
+                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی آبان‌تتر جهت استعلام موجودی وجود نداشت.")
                 return None
 
             self.check_and_update_capital(usdt_balance)
 
-            # اصلاح فرمت نماد با خط زیرین برای سازگاری کامل با پکیج صرافی تبدیل
-            clean_symbol = symbol.replace('/', '_')
+            base_symbol = symbol.split('/')[0]
 
             if side == "BUY":
                 if symbol in self.active_positions:
@@ -184,7 +157,7 @@ class TabdealTrader:
                     return None
 
                 if usdt_balance < 1.0:
-                    logger.warning(f"موجودی کل حساب ({usdt_balance} USDT) کمتر از حداقل مجاز صرافی (1.0 USDT) است. معامله رد شد.")
+                    logger.warning(f"موجودی کل حساب ({usdt_balance} USDT) کمتر از حداقل مجاز صرافی است. معامله رد شد.")
                     return None
 
                 base_capital = self.initial_capital if self.initial_capital and self.initial_capital > 0 else usdt_balance
@@ -195,59 +168,73 @@ class TabdealTrader:
                 if usdt_balance < allocated_budget:
                     logger.warning(f"موجودی کل کافی برای تخصیص بودجه مورد نظر نیست. معامله رد شد.")
                     return None
-
-                amount_to_buy = allocated_budget / price
-                amount_str = f"{amount_to_buy:.6f}"
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                # استفاده از پکیج SDK تبدیل برای ثبت سفارش خرید
-                order_response = self.tabdeal_client.new_order(
-                    symbol=clean_symbol,
-                    side=OrderSides.BUY,
-                    type=OrderTypes.MARKET,
-                    quantity=amount_str
-                )
-                
-                tp_price = dynamic_tp if dynamic_tp else price * 1.025
-                sl_price = dynamic_sl if dynamic_sl else price * 0.985
-                
-                self.active_positions[symbol] = {
-                    "entry_price": price,
-                    "tp_price": tp_price,
-                    "sl_price": sl_price
+                url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
+                headers = {
+                    "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                    "Content-Type": "application/json"
                 }
-                self.save_positions()
-                
-                logger.info(f"سفارش خرید اسپات در تبدیل با موفقیت ثبت شد: {order_response} | TP: {tp_price} | SL: {sl_price}")
-                return None
+                payload = {
+                    "side": "buy",
+                    "base_symbol": base_symbol,
+                    "quote_symbol": "USDT",
+                    "volume": float(allocated_budget)
+                }
+
+                response = requests.post(url, headers=headers, json=payload, timeout=15)
+                logger.info(f"پاسخ ثبت سفارش خرید آبان‌تتر - کد: {response.status_code} | متن: {response.text}")
+
+                if response.status_code in [200, 201]:
+                    tp_price = dynamic_tp if dynamic_tp else price * 1.025
+                    sl_price = dynamic_sl if dynamic_sl else price * 0.985
+                    
+                    self.active_positions[symbol] = {
+                        "entry_price": price,
+                        "tp_price": tp_price,
+                        "sl_price": sl_price
+                    }
+                    self.save_positions()
+                    logger.info(f"سفارش خرید اسپات در آبان‌تتر با موفقیت ثبت شد | TP: {tp_price} | SL: {sl_price}")
+                    return None
+                else:
+                    logger.error(f"خطا در ثبت سفارش خرید آبان‌تتر: {response.text}")
+                    return None
 
             elif side == "SELL":
-                base_currency = symbol.split('/')[0]
                 base_free = 0.0
                 try:
-                    account = self.tabdeal_client.account()
-                    data = account.get('data', account.get('balances', account.get('assets', [])))
-                    if isinstance(data, list):
-                        for asset in data:
-                            if asset.get('currency', '').upper() == base_currency.upper() or asset.get('asset', '').upper() == base_currency.upper():
-                                base_free = float(asset.get('free', asset.get('balance', 0.0)))
+                    url = f"{self.base_url}/api/v1/accounting/balances?type=spot&symbols={base_symbol}"
+                    headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+                    res = requests.get(url, headers=headers, timeout=10)
+                    if res.status_code == 200:
+                        res_json = res.json()
+                        balances_list = res_json if isinstance(res_json, list) else res_json.get('data', [])
+                        for asset in balances_list:
+                            if asset.get('symbol', '').upper() == base_symbol.upper():
+                                base_free = float(asset.get('available', asset.get('balance', 0.0)))
                                 break
                 except Exception as e:
-                    logger.error(f"خطا در استعلام دارایی پایه برای فروش: {e}")
+                    logger.error(f"خطا در استعلام دارایی پایه برای فروش در آبان‌تتر: {e}")
                 
                 if base_free > 0:
-                    amount_str = f"{base_free:.6f}"
-                    
-                    try:
-                        # مرحله اول: تلاش برای فروش مستقیم با پکیج SDK
-                        order_response = self.tabdeal_client.new_order(
-                            symbol=clean_symbol,
-                            side=OrderSides.SELL,
-                            type=OrderTypes.MARKET,
-                            quantity=amount_str
-                        )
-                        
+                    url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
+                    headers = {
+                        "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "side": "sell",
+                        "base_symbol": base_symbol,
+                        "quote_symbol": "USDT",
+                        "volume": float(base_free)
+                    }
+
+                    response = requests.post(url, headers=headers, json=payload, timeout=15)
+                    logger.info(f"پاسخ ثبت سفارش فروش آبان‌تتر - کد: {response.status_code} | متن: {response.text}")
+
+                    if response.status_code in [200, 201]:
                         pnl_percent = 0.0
                         if symbol in self.active_positions:
                             entry_price = self.active_positions[symbol]["entry_price"]
@@ -255,7 +242,7 @@ class TabdealTrader:
                             del self.active_positions[symbol]
                             self.save_positions()
 
-                        logger.info(f"سفارش فروش اسپات در تبدیل با موفقیت ثبت شد: {order_response} | سود/زیان: {pnl_percent:.2f}%")
+                        logger.info(f"سفارش فروش اسپات در آبان‌تتر با موفقیت ثبت شد | سود/زیان: {pnl_percent:.2f}%")
                         return {
                             "action": "close_trade",
                             "symbol": symbol,
@@ -263,44 +250,18 @@ class TabdealTrader:
                             "exit_price": price,
                             "pnl": round(pnl_percent, 2)
                         }
-                    except Exception as direct_err:
-                        # اگر فروش مستقیم به خاطر محدودیت صرافی خطا داد، استفاده از روش جایگزین (خرید معکوس با دارایی موجود)
-                        logger.warning(f"فروش مستقیم موفق نبود (خطای صرافی: {direct_err}). تلاش از طریق روش جایگزین (خرید/تبدیل)...")
-                        try:
-                            alt_order_response = self.tabdeal_client.new_order(
-                                symbol=clean_symbol,
-                                side=OrderSides.BUY,
-                                type=OrderTypes.MARKET,
-                                quantity=amount_str
-                            )
-                            
-                            pnl_percent = 0.0
-                            if symbol in self.active_positions:
-                                entry_price = self.active_positions[symbol]["entry_price"]
-                                pnl_percent = ((price - entry_price) / entry_price) * 100
-                                del self.active_positions[symbol]
-                                self.save_positions()
-
-                            logger.info(f"سفارش از طریق مسیر جایگزین (تبدیل) با موفقیت انجام شد: {alt_order_response} | سود/زیان: {pnl_percent:.2f}%")
-                            return {
-                                "action": "close_trade",
-                                "symbol": symbol,
-                                "side": "SELL",
-                                "exit_price": price,
-                                "pnl": round(pnl_percent, 2)
-                            }
-                        except Exception as alt_ex:
-                            logger.error(f"خطای استثناء در اجرای روش جایگزین فروش: {alt_ex}")
-                            return None
+                    else:
+                        logger.error(f"خطا در ثبت سفارش فروش آبان‌تتر: {response.text}")
+                        return None
                 else:
-                    logger.warning(f"دارایی کافی از ارز {base_currency} برای فروش موجود نیست.")
+                    logger.warning(f"دارایی کافی از ارز {base_symbol} برای فروش در آبان‌تتر موجود نیست.")
                     if symbol in self.active_positions:
                         del self.active_positions[symbol]
                         self.save_positions()
                     return None
 
         except Exception as e:
-            logger.error(f"خطا در اجرای سفارش واقعی در صرافی تبدیل برای {symbol}: {e}")
+            logger.error(f"خطا در اجرای سفارش واقعی در صرافی آبان‌تتر برای {symbol}: {e}")
             return None
 
 # ==================== ارتباط با رندر ====================
@@ -321,7 +282,7 @@ class RenderNotifier:
 
 # ==================== تعریف سراسری برای حفظ وضعیت پوزیشن‌ها ====================
 config = Config()
-trader = TabdealTrader(config)
+trader = AbanTetherTrader(config)
 notifier = RenderNotifier(config)
 
 # ==================== وب‌سرور همروش ====================
