@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== تنظیمات ====================
 class Config:
-    ABANTETHER_API_KEY = os.getenv("ABANTETHER_API_KEY", "")
+    ABANTETHER_API_KEY = os.getenv("ABANTETHER_API_KEY", "").strip()
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
     SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
@@ -81,7 +81,14 @@ class AbanTetherTrader:
     def check_order_endpoint_health(self):
         try:
             url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
-            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+            # اصلاح ساختار هدر دقیقاً مطابق استاندارد مستندات آبان‌تتر
+            token_val = self.config.ABANTETHER_API_KEY
+            if not token_val.startswith("Token "):
+                auth_header = f"Token {token_val}"
+            else:
+                auth_header = token_val
+                
+            headers = {"Authorization": auth_header}
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی آبان‌تتر: موفق - ارتباط با اندپوینت برقرار است.")
@@ -93,7 +100,13 @@ class AbanTetherTrader:
     def get_usdt_balance(self) -> Optional[float]:
         try:
             url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
-            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+            token_val = self.config.ABANTETHER_API_KEY
+            if not token_val.startswith("Token "):
+                auth_header = f"Token {token_val}"
+            else:
+                auth_header = token_val
+
+            headers = {"Authorization": auth_header}
             res = requests.get(url, headers=headers, timeout=10)
             logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
             
@@ -150,6 +163,11 @@ class AbanTetherTrader:
             self.check_and_update_capital(usdt_balance)
 
             base_symbol = symbol.split('/')[0]
+            token_val = self.config.ABANTETHER_API_KEY
+            if not token_val.startswith("Token "):
+                auth_header = f"Token {token_val}"
+            else:
+                auth_header = token_val
 
             if side == "BUY":
                 if symbol in self.active_positions:
@@ -173,7 +191,7 @@ class AbanTetherTrader:
 
                 url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
                 headers = {
-                    "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                    "Authorization": auth_header,
                     "Content-Type": "application/json"
                 }
                 payload = {
@@ -206,7 +224,7 @@ class AbanTetherTrader:
                 base_free = 0.0
                 try:
                     url = f"{self.base_url}/api/v1/accounting/balances?type=spot&symbols={base_symbol}"
-                    headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
+                    headers = {"Authorization": auth_header}
                     res = requests.get(url, headers=headers, timeout=10)
                     if res.status_code == 200:
                         res_json = res.json()
@@ -221,7 +239,7 @@ class AbanTetherTrader:
                 if base_free > 0:
                     url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
                     headers = {
-                        "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                        "Authorization": auth_header,
                         "Content-Type": "application/json"
                     }
                     payload = {
