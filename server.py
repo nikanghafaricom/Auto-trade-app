@@ -80,9 +80,10 @@ class AbanTetherTrader:
 
     def check_order_endpoint_health(self):
         try:
-            url = f"{self.base_url}/accounting/balances?type=spot"
+            url = f"{self.base_url}/accounting/balances"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            res = requests.get(url, headers=headers, timeout=10)
+            params = {"type": "spot"}
+            res = requests.get(url, headers=headers, params=params, timeout=10)
             if res.status_code == 200:
                 logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی آبان‌تتر: موفق - ارتباط با اندپوینت برقرار است.")
             else:
@@ -92,9 +93,10 @@ class AbanTetherTrader:
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = f"{self.base_url}/accounting/balances?type=spot"
+            url = f"{self.base_url}/accounting/balances"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            res = requests.get(url, headers=headers, timeout=10)
+            params = {"type": "spot"}
+            res = requests.get(url, headers=headers, params=params, timeout=10)
             logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
             
             if res.status_code == 200:
@@ -205,9 +207,10 @@ class AbanTetherTrader:
             elif side == "SELL":
                 base_free = 0.0
                 try:
-                    url = f"{self.base_url}/accounting/balances?type=spot&symbols={base_symbol}"
+                    url = f"{self.base_url}/accounting/balances"
                     headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-                    res = requests.get(url, headers=headers, timeout=10)
+                    params = {"type": "spot", "symbols": base_symbol}
+                    res = requests.get(url, headers=headers, params=params, timeout=10)
                     if res.status_code == 200:
                         res_json = res.json()
                         balances_list = res_json if isinstance(res_json, list) else res_json.get('data', [])
