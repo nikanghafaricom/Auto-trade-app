@@ -80,7 +80,7 @@ class AbanTetherTrader:
 
     def check_order_endpoint_health(self):
         try:
-            url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
+            url = f"{self.base_url}/accounting/balances?type=spot"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
@@ -92,7 +92,7 @@ class AbanTetherTrader:
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = f"{self.base_url}/api/v1/accounting/balances?type=spot"
+            url = f"{self.base_url}/accounting/balances?type=spot"
             headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
             res = requests.get(url, headers=headers, timeout=10)
             logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
@@ -171,7 +171,7 @@ class AbanTetherTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
+                url = f"{self.base_url}/order_handler/orders/otc/market"
                 headers = {
                     "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
                     "Content-Type": "application/json"
@@ -205,7 +205,7 @@ class AbanTetherTrader:
             elif side == "SELL":
                 base_free = 0.0
                 try:
-                    url = f"{self.base_url}/api/v1/accounting/balances?type=spot&symbols={base_symbol}"
+                    url = f"{self.base_url}/accounting/balances?type=spot&symbols={base_symbol}"
                     headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
                     res = requests.get(url, headers=headers, timeout=10)
                     if res.status_code == 200:
@@ -219,7 +219,7 @@ class AbanTetherTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در آبان‌تتر: {e}")
                 
                 if base_free > 0:
-                    url = f"{self.base_url}/api/v1/order_handler/orders/otc/market"
+                    url = f"{self.base_url}/order_handler/orders/otc/market"
                     headers = {
                         "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
                         "Content-Type": "application/json"
