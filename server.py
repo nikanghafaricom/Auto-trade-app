@@ -389,7 +389,7 @@ if __name__ == "__main__":
                         close_result = trader.check_tp_sl_and_update(symbol, current_price)
                         if close_result:
                             notifier.send_to_render(close_result)
-                    exceptException as e:
+                    except Exception as e:
                         logger.error(f"خطا در بررسی قیمت لحظه‌ای {symbol}: {e}")
             time.sleep(30)
     except KeyboardInterrupt:
