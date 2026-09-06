@@ -31,22 +31,22 @@ logger = logging.getLogger(__name__)
 
 # ==================== تنظیمات ====================
 class Config:
-    ABANTETHER_API_KEY = os.getenv("ABANTETHER_API_KEY", "").strip()
+    WALLEX_API_KEY = os.getenv("WALLEX_API_KEY", "").strip()
     RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "")
     SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
     def validate(self):
         pass
 
-# ==================== مدیریت معاملات با همگام‌سازی خودکار صرافی (آبان‌تتر) ====================
-class AbanTetherTrader:
+# ==================== مدیریت معاملات با همگام‌سازی خودکار صرافی (والکس) ====================
+class WallexTrader:
     def __init__(self, config: Config):
         self.config = config
         self.initial_capital = None
         self.last_capital_reset_time = None
         self.positions_file = "active_positions.json"
         self.active_positions = self.load_positions()
-        self.base_url = "https://api.abantether.com/api/v1"
+        self.base_url = "https://api.wallex.ir/v1"
         
         try:
             self.exchange = ccxt.coinex({
@@ -80,40 +80,48 @@ class AbanTetherTrader:
 
     def check_order_endpoint_health(self):
         try:
-            url = f"{self.base_url}/accounting/balances"
-            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            params = {"type": "spot"}
-            res = requests.get(url, headers=headers, params=params, timeout=10)
+            url = f"{self.base_url}/account/balances"
+            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+            res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
-                logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی آبان‌تتر: موفق - ارتباط با اندپوینت برقرار است.")
+                logger.info("وضعیت دسترسی به بخش حساب و موجودی صرافی والکس: موفق - ارتباط با اندپوینت برقرار است.")
             else:
-                logger.warning(f"هشدار: پاسخ غیرمنتظره از آبان‌تتر در تست سلامت (کد {res.status_code}): {res.text}")
+                logger.warning(f"هشدار: پاسخ غیرمنتظره از والکس در تست سلامت (کد {res.status_code}): {res.text}")
         except Exception as e:
-            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش سفارشات صرافی آبان‌تتر در زمان دپلوی: {e}")
+            logger.error(f"خطای بحرانی: عدم توانایی در دسترسی به بخش سفارشات صرافی والکس در زمان دپلوی: {e}")
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = f"{self.base_url}/accounting/balances"
-            headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-            params = {"type": "spot"}
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            logger.info(f"پاسخ دیاگ لحظه‌ای API آبان‌تتر - کد پاسخ: {res.status_code}")
+            url = f"{self.base_url}/account/balances"
+            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+            res = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"پاسخ دیاگ لحظه‌ای API والکس - کد پاسخ: {res.status_code}")
             
             if res.status_code == 200:
                 response = res.json()
                 logger.info(f"محتوای پاسخ موجودی: {response}")
-                balances_list = response if isinstance(response, list) else response.get('data', [])
-                for asset in balances_list:
-                    if asset.get('symbol', '').upper() == 'USDT':
-                        usdt_val = float(asset.get('available', asset.get('balance', 0.0)))
-                        logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                        return usdt_val
+                
+                # ساختار پاسخ والکس معمولاً شامل result -> balances یا مشابه آن است
+                result_data = response.get('result', response)
+                balances_dict = result_data.get('balances', result_data)
+                
+                if isinstance(balances_dict, dict):
+                    usdt_info = balances_dict.get('USDT', {})
+                    usdt_val = float(usdt_info.get('value', usdt_info.get('free', 0.0)))
+                    logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                    return usdt_val
+                elif isinstance(balances_dict, list):
+                    for asset in balances_dict:
+                        if asset.get('asset', asset.get('symbol', '')).upper() == 'USDT':
+                            usdt_val = float(asset.get('value', asset.get('free', 0.0)))
+                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
+                            return usdt_val
                 return 0.0
             else:
                 logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
                 return None
         except Exception as e:
-            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی آبان‌تتر برای دریافت موجودی: {e}")
+            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی والکس برای دریافت موجودی: {e}")
             return None
 
     def check_and_update_capital(self, current_balance: float):
@@ -146,12 +154,14 @@ class AbanTetherTrader:
         try:
             usdt_balance = self.get_usdt_balance()
             if usdt_balance is None:
-                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی آبان‌تتر جهت استعلام موجودی وجود نداشت.")
+                logger.error("معامله متوقف شد: امکان برقراری ارتباط صحیح با صرافی والکس جهت استعلام موجودی وجود نداشت.")
                 return None
 
             self.check_and_update_capital(usdt_balance)
 
+            # تبدیل فرمت نماد (مثلا BTC/USDT به BTCUSDT یا معادل آن در والکس)
             base_symbol = symbol.split('/')[0]
+            wallex_symbol = f"{base_symbol}USDT"
 
             if side == "BUY":
                 if symbol in self.active_positions:
@@ -173,20 +183,24 @@ class AbanTetherTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                url = f"{self.base_url}/order_handler/orders/otc/market"
+                url = f"{self.base_url}/order/add"
                 headers = {
-                    "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                    "X-API-Key": self.config.WALLEX_API_KEY,
                     "Content-Type": "application/json"
                 }
+                
+                # محاسبه مقدار بر اساس بودجه تخصیص یافته و قیمت تقریبی لحظه
+                amount = allocated_budget / price if price > 0 else 0
+
                 payload = {
+                    "symbol": wallex_symbol,
+                    "type": "market",
                     "side": "buy",
-                    "base_symbol": base_symbol,
-                    "quote_symbol": "USDT",
-                    "volume": float(allocated_budget)
+                    "amount": round(amount, 6)
                 }
 
                 response = requests.post(url, headers=headers, json=payload, timeout=15)
-                logger.info(f"پاسخ ثبت سفارش خرید آبان‌تتر - کد: {response.status_code} | متن: {response.text}")
+                logger.info(f"پاسخ ثبت سفارش خرید والکس - کد: {response.status_code} | متن: {response.text}")
 
                 if response.status_code in [200, 201]:
                     tp_price = dynamic_tp if dynamic_tp else price * 1.025
@@ -198,44 +212,49 @@ class AbanTetherTrader:
                         "sl_price": sl_price
                     }
                     self.save_positions()
-                    logger.info(f"سفارش خرید اسپات در آبان‌تتر با موفقیت ثبت شد | TP: {tp_price} | SL: {sl_price}")
+                    logger.info(f"سفارش خرید اسپات در والکس با موفقیت ثبت شد | TP: {tp_price} | SL: {sl_price}")
                     return None
                 else:
-                    logger.error(f"خطا در ثبت سفارش خرید آبان‌تتر: {response.text}")
+                    logger.error(f"خطا در ثبت سفارش خرید والکس: {response.text}")
                     return None
 
             elif side == "SELL":
                 base_free = 0.0
                 try:
-                    url = f"{self.base_url}/accounting/balances"
-                    headers = {"Authorization": f"Token {self.config.ABANTETHER_API_KEY}"}
-                    params = {"type": "spot", "symbols": base_symbol}
-                    res = requests.get(url, headers=headers, params=params, timeout=10)
+                    url = f"{self.base_url}/account/balances"
+                    headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+                    res = requests.get(url, headers=headers, timeout=10)
                     if res.status_code == 200:
                         res_json = res.json()
-                        balances_list = res_json if isinstance(res_json, list) else res_json.get('data', [])
-                        for asset in balances_list:
-                            if asset.get('symbol', '').upper() == base_symbol.upper():
-                                base_free = float(asset.get('available', asset.get('balance', 0.0)))
-                                break
+                        result_data = res_json.get('result', res_json)
+                        balances_dict = result_data.get('balances', result_data)
+                        
+                        if isinstance(balances_dict, dict):
+                            asset_info = balances_dict.get(base_symbol, {})
+                            base_free = float(asset_info.get('value', asset_info.get('free', 0.0)))
+                        elif isinstance(balances_dict, list):
+                            for asset in balances_dict:
+                                if asset.get('asset', asset.get('symbol', '')).upper() == base_symbol.upper():
+                                    base_free = float(asset.get('value', asset.get('free', 0.0)))
+                                    break
                 except Exception as e:
-                    logger.error(f"خطا در استعلام دارایی پایه برای فروش در آبان‌تتر: {e}")
+                    logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
                 
                 if base_free > 0:
-                    url = f"{self.base_url}/order_handler/orders/otc/market"
+                    url = f"{self.base_url}/order/add"
                     headers = {
-                        "Authorization": f"Token {self.config.ABANTETHER_API_KEY}",
+                        "X-API-Key": self.config.WALLEX_API_KEY,
                         "Content-Type": "application/json"
                     }
                     payload = {
+                        "symbol": wallex_symbol,
+                        "type": "market",
                         "side": "sell",
-                        "base_symbol": base_symbol,
-                        "quote_symbol": "USDT",
-                        "volume": float(base_free)
+                        "amount": round(base_free, 6)
                     }
 
                     response = requests.post(url, headers=headers, json=payload, timeout=15)
-                    logger.info(f"پاسخ ثبت سفارش فروش آبان‌تتر - کد: {response.status_code} | متن: {response.text}")
+                    logger.info(f"پاسخ ثبت سفارش فروش والکس - کد: {response.status_code} | متن: {response.text}")
 
                     if response.status_code in [200, 201]:
                         pnl_percent = 0.0
@@ -245,7 +264,7 @@ class AbanTetherTrader:
                             del self.active_positions[symbol]
                             self.save_positions()
 
-                        logger.info(f"سفارش فروش اسپات در آبان‌تتر با موفقیت ثبت شد | سود/زیان: {pnl_percent:.2f}%")
+                        logger.info(f"سفارش فروش اسپات در والکس با موفقیت ثبت شد | سود/زیان: {pnl_percent:.2f}%")
                         return {
                             "action": "close_trade",
                             "symbol": symbol,
@@ -254,17 +273,17 @@ class AbanTetherTrader:
                             "pnl": round(pnl_percent, 2)
                         }
                     else:
-                        logger.error(f"خطا در ثبت سفارش فروش آبان‌تتر: {response.text}")
+                        logger.error(f"خطا در ثبت سفارش فروش والکس: {response.text}")
                         return None
                 else:
-                    logger.warning(f"دارایی کافی از ارز {base_symbol} برای فروش در آبان‌تتر موجود نیست.")
+                    logger.warning(f"دارایی کافی از ارز {base_symbol} برای فروش در والکس موجود نیست.")
                     if symbol in self.active_positions:
                         del self.active_positions[symbol]
                         self.save_positions()
                     return None
 
         except Exception as e:
-            logger.error(f"خطا در اجرای سفارش واقعی در صرافی آبان‌تتر برای {symbol}: {e}")
+            logger.error(f"خطا در اجرای سفارش واقعی در صرافی والکس برای {symbol}: {e}")
             return None
 
 # ==================== ارتباط با رندر ====================
@@ -285,7 +304,7 @@ class RenderNotifier:
 
 # ==================== تعریف سراسری برای حفظ وضعیت پوزیشن‌ها ====================
 config = Config()
-trader = AbanTetherTrader(config)
+trader = WallexTrader(config)
 notifier = RenderNotifier(config)
 
 # ==================== وب‌سرور همروش ====================
@@ -370,7 +389,7 @@ if __name__ == "__main__":
                         close_result = trader.check_tp_sl_and_update(symbol, current_price)
                         if close_result:
                             notifier.send_to_render(close_result)
-                    except Exception as e:
+                    exceptException as e:
                         logger.error(f"خطا در بررسی قیمت لحظه‌ای {symbol}: {e}")
             time.sleep(30)
     except KeyboardInterrupt:
