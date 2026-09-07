@@ -68,19 +68,7 @@ class WallexTrader:
                     logger.info(f"پوزیشن‌های باز قبلی با موفقیت از فایل بارگذاری شدند: {list(data.keys())}")
                     return data
             except Exception as e:
-                logger.error(f"خطا در خواندن فایل پوزیشن‌ها: {e}")
-        return {}
-
-    def save_positions(self):
-        try:
-            with open(self.positions_file, 'w', encoding='utf-8') as f:
-                json.dump(self.active_positions, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            logger.error(f"خطا در ذخیره فایل پوزیشن‌ها: {e}")
-
-    def check_order_endpoint_health(self):
-        try:
-            url = f"{self.base_url}/account/balances"
+                logger.erro
             headers = {"X-API-Key": self.config.WALLEX_API_KEY}
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
@@ -92,42 +80,6 @@ class WallexTrader:
 
     def get_usdt_balance(self) -> Optional[float]:
         try:
-            url = f"{self.base_url}/account/balances"
-            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
-            res = requests.get(url, headers=headers, timeout=10)
-            logger.info(f"پاسخ دیاگ لحظه‌ای API والکس - کد پاسخ: {res.status_code}")
-            
-            if res.status_code == 200:
-                response = res.json()
-                logger.info(f"محتوای پاسخ موجودی: {response}")
-                
-                # ساختار پاسخ والکس معمولاً شامل result -> balances یا مشابه آن است
-                result_data = response.get('result', response)
-                balances_dict = result_data.get('balances', result_data)
-                
-                if isinstance(balances_dict, dict):
-                    usdt_info = balances_dict.get('USDT', {})
-                    usdt_val = float(usdt_info.get('value', usdt_info.get('free', 0.0)))
-                    logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                    return usdt_val
-                elif isinstance(balances_dict, list):
-                    for asset in balances_dict:
-                        if asset.get('asset', asset.get('symbol', '')).upper() == 'USDT':
-                            usdt_val = float(asset.get('value', asset.get('free', 0.0)))
-                            logger.info(f"موجودی تتر شناسایی شده: {usdt_val}")
-                            return usdt_val
-                return 0.0
-            else:
-                logger.error(f"خطای ارتباط با صرافی در دریافت موجودی (کد پاسخ {res.status_code}) - متن پاسخ: {res.text}")
-                return None
-        except Exception as e:
-            logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی والکس برای دریافت موجودی: {e}")
-            return None
-
-    def check_and_update_capital(self, current_balance: float):
-        now = datetime.now()
-        if self.initial_capital is None or self.last_capital_reset_time is None:
-            self.initial_capital = current_balance
             self.last_capital_reset_time = now
             logger.info(f"سرمایه پایه اولیه ثبت شد: {self.initial_capital} USDT")
         elif now - self.last_capital_reset_time >= timedelta(hours=3):
