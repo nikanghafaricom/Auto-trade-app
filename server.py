@@ -159,7 +159,8 @@ class WallexTrader:
             self.check_and_update_capital(usdt_balance)
 
             base_symbol = symbol.split('/')[0]
-            wallex_symbol = f"{base_symbol}USDT"
+            # اصلاح فرمت نماد به صورت استاندارد والکس (با خط تیره)
+            wallex_symbol = f"{base_symbol}-USDT"
 
             if side == "BUY":
                 if symbol in self.active_positions:
@@ -181,7 +182,6 @@ class WallexTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                # اصلاح شده به مسیر درست صرافی والکس
                 url = f"{self.base_url}/account/orders"
                 headers = {
                     "X-API-Key": self.config.WALLEX_API_KEY,
@@ -239,7 +239,6 @@ class WallexTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
                 
                 if base_free > 0:
-                    # اصلاح شده به مسیر درست صرافی والکس
                     url = f"{self.base_url}/account/orders"
                     headers = {
                         "X-API-Key": self.config.WALLEX_API_KEY,
