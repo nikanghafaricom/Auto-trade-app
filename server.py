@@ -101,7 +101,6 @@ class WallexTrader:
                 response = res.json()
                 logger.info(f"محتوای پاسخ موجودی: {response}")
                 
-                # ساختار پاسخ والکس معمولاً شامل result -> balances یا مشابه آن است
                 result_data = response.get('result', response)
                 balances_dict = result_data.get('balances', result_data)
                 
@@ -159,7 +158,6 @@ class WallexTrader:
 
             self.check_and_update_capital(usdt_balance)
 
-            # تبدیل فرمت نماد (مثلا BTC/USDT به BTCUSDT یا معادل آن در والکس)
             base_symbol = symbol.split('/')[0]
             wallex_symbol = f"{base_symbol}USDT"
 
@@ -183,13 +181,13 @@ class WallexTrader:
                 
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                url = f"{self.base_url}/order/add"
+                # اصلاح شده به مسیر درست صرافی والکس
+                url = f"{self.base_url}/account/orders"
                 headers = {
                     "X-API-Key": self.config.WALLEX_API_KEY,
                     "Content-Type": "application/json"
                 }
                 
-                # محاسبه مقدار بر اساس بودجه تخصیص یافته و قیمت تقریبی لحظه
                 amount = allocated_budget / price if price > 0 else 0
 
                 payload = {
@@ -241,7 +239,8 @@ class WallexTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
                 
                 if base_free > 0:
-                    url = f"{self.base_url}/order/add"
+                    # اصلاح شده به مسیر درست صرافی والکس
+                    url = f"{self.base_url}/account/orders"
                     headers = {
                         "X-API-Key": self.config.WALLEX_API_KEY,
                         "Content-Type": "application/json"
