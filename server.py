@@ -159,8 +159,8 @@ class WallexTrader:
             self.check_and_update_capital(usdt_balance)
 
             base_symbol = symbol.split('/')[0]
-            # اصلاح فرمت نماد به صورت استاندارد والکس (با خط تیره)
-            wallex_symbol = f"{base_symbol}-USDT"
+            # بازگشت به فرمت بدون خط تیره (مثل DOGEUSDT) چون صرافی در ارور قبل این نماد را شناخت
+            wallex_symbol = f"{base_symbol}USDT"
 
             if side == "BUY":
                 if symbol in self.active_positions:
