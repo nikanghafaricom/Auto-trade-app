@@ -160,7 +160,7 @@ class WallexTrader:
             "symbol": wallex_symbol,
             "type": order_type,
             "side": side,
-            "quantity": round(quantity, 6),
+            "quantity": round(quantity, 5),
             "price": str(price)
         }
 
