@@ -167,13 +167,13 @@ class WallexTrader:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         return response
 
-    def _place_order_with_retries(self, wallex_symbol: str, side: str, quantity: float, price: float, allow_limit_fallback: bool = True):
+    def _place_order_with_retries(self, wallex_symbol: str, side: str, quantity: float, price: float, limit_offsets: list = None):
         """
         اول Market امتحان می‌شود.
-        اگر allow_limit_fallback=False باشد (حالت خرید): با شکست Market، دیگر سراغ Limit نمی‌رود و همینجا رد می‌شود.
-        اگر allow_limit_fallback=True باشد (حالت فروش): در صورت عدم پشتیبانی Market:
-            - Limit با آفست ۰.۲٪ (سریع، کمترین آسیب به سود)
-            - اگر بازهم شکست خورد: Limit با آفست ۱٪ (تضمین بیشتر برای انجام سفارش)
+        اگر نشد و limit_offsets داده شده باشد، به ترتیب هر آفست به‌صورت سفارش Limit امتحان می‌شود
+        (آفست 0 یعنی Limit دقیقاً روی همان قیمت، بدون بالا/پایین بردن).
+        خرید: قیمت با (1 + آفست) ضرب می‌شود (بالاتر).
+        فروش: قیمت با (1 - آفست) ضرب می‌شود (پایین‌تر).
         side: "buy" یا "sell" (حروف کوچک، مطابق پارامتر ورودی به _submit_order)
         """
         # مرحله ۱: Market
@@ -182,7 +182,7 @@ class WallexTrader:
         if response.status_code in [200, 201]:
             return response
 
-        if not allow_limit_fallback:
+        if not limit_offsets:
             logger.warning(f"سفارش Market ({side}) برای {wallex_symbol} ناموفق بود؛ طبق تنظیم، سراغ Limit نمی‌رویم و معامله رد می‌شود.")
             return response
 
@@ -190,19 +190,13 @@ class WallexTrader:
             # خطا ربطی به عدم پشتیبانی Market ندارد؛ رفتن به مراحل بعد فایده‌ای ندارد
             return response
 
-        # مرحله ۲: Limit با آفست کم (۰.۲٪)
-        offset_small = 0.002
-        limit_price = price * (1 + offset_small) if side == "buy" else price * (1 - offset_small)
-        response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
-        logger.info(f"پاسخ سفارش Limit آفست ۰.۲٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
-        if response.status_code in [200, 201]:
-            return response
+        for offset in limit_offsets:
+            limit_price = price * (1 + offset) if side == "buy" else price * (1 - offset)
+            response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
+            logger.info(f"پاسخ سفارش Limit آفست {offset * 100:.1f}٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
+            if response.status_code in [200, 201]:
+                return response
 
-        # مرحله ۳: Limit با آفست بیشتر (۱٪)
-        offset_large = 0.01
-        limit_price = price * (1 + offset_large) if side == "buy" else price * (1 - offset_large)
-        response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
-        logger.info(f"پاسخ سفارش Limit آفست ۱٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
         return response
 
     def execute_spot_order(self, symbol: str, side: str, price: float, dynamic_tp: float = None, dynamic_sl: float = None):
@@ -240,7 +234,7 @@ class WallexTrader:
 
                 amount = allocated_budget / price if price > 0 else 0
 
-                response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, allow_limit_fallback=False)
+                response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, limit_offsets=[0, 0.001, 0.002, 0.005])
 
                 if response.status_code in [200, 201]:
                     tp_price = dynamic_tp if dynamic_tp else price * 1.025
@@ -281,7 +275,7 @@ class WallexTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
 
                 if base_free > 0:
-                    response = self._place_order_with_retries(wallex_symbol, "sell", base_free, price)
+                    response = self._place_order_with_retries(wallex_symbol, "sell", base_free, price, limit_offsets=[0, 0.002, 0.01])
 
                     if response.status_code in [200, 201]:
                         pnl_percent = 0.0
