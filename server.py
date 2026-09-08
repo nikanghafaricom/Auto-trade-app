@@ -12,7 +12,6 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
-import ccxt
 import requests
 from dotenv import load_dotenv
 
@@ -47,16 +46,6 @@ class WallexTrader:
         self.positions_file = "active_positions.json"
         self.active_positions = self.load_positions()
         self.base_url = "https://api.wallex.ir/v1"
-
-        try:
-            self.exchange = ccxt.coinex({
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
-            })
-            logger.info("اتصال به صرافی جهت دریافت قیمت‌های لحظه‌ای بازار با موفقیت راه‌اندازی شد.")
-        except Exception as e:
-            logger.error(f"خطا در راه‌اندازی اتصال قیمت بازار: {e}")
-            self.exchange = None
 
         self.check_order_endpoint_health()
 
@@ -121,6 +110,45 @@ class WallexTrader:
                 return None
         except Exception as e:
             logger.error(f"خطای شبکه یا استثناء در ارتباط با صرافی والکس برای دریافت موجودی: {e}")
+            return None
+
+    def get_market_limits(self, wallex_symbol: str):
+        """دریافت حداقل مقدار (minQty) و حداقل ارزش سفارش (minNotional) یک بازار از والکس."""
+        try:
+            url = f"{self.base_url}/markets"
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                symbols = data.get('result', {}).get('symbols', {})
+                symbol_data = symbols.get(wallex_symbol, {})
+                min_qty = float(symbol_data.get('minQty', 0) or 0)
+                min_notional = float(symbol_data.get('minNotional', 0) or 0)
+                return min_qty, min_notional
+            logger.error(f"خطا در دریافت محدودیت‌های بازار {wallex_symbol} - کد: {res.status_code}")
+            return 0.0, 0.0
+        except Exception as e:
+            logger.error(f"خطای شبکه در دریافت محدودیت‌های بازار {wallex_symbol}: {e}")
+            return 0.0, 0.0
+
+    def get_wallex_price(self, wallex_symbol: str) -> Optional[float]:
+        """دریافت قیمت لحظه‌ای (lastPrice) مستقیم از اندپوینت عمومی بازارهای والکس."""
+        try:
+            url = f"{self.base_url}/markets"
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                symbols = data.get('result', {}).get('symbols', {})
+                symbol_data = symbols.get(wallex_symbol, {})
+                last_price = symbol_data.get('stats', {}).get('lastPrice')
+                if last_price is not None:
+                    return float(last_price)
+                logger.error(f"نماد {wallex_symbol} در پاسخ بازارهای والکس یافت نشد.")
+                return None
+            else:
+                logger.error(f"خطا در دریافت قیمت لحظه‌ای {wallex_symbol} از والکس - کد: {res.status_code}")
+                return None
+        except Exception as e:
+            logger.error(f"خطای شبکه در دریافت قیمت لحظه‌ای {wallex_symbol} از والکس: {e}")
             return None
 
     def check_and_update_capital(self, current_balance: float):
@@ -225,6 +253,13 @@ class WallexTrader:
                 allocated_budget = base_capital * 0.20
                 if allocated_budget < 1.0:
                     allocated_budget = 1.0
+
+                min_qty, min_notional = self.get_market_limits(wallex_symbol)
+                if min_notional > 0:
+                    safe_budget = min_notional * 1.05  # حاشیه امن ۵٪ برای جلوگیری از افتادن زیر حداقل هنگام فروش با افت جزئی قیمت
+                    if allocated_budget < safe_budget:
+                        allocated_budget = safe_budget
+                        logger.info(f"بودجه {symbol} برای رعایت حداقل ارزش مجاز بازار ({min_notional} USDT) به {allocated_budget:.4f} USDT افزایش یافت.")
 
                 if usdt_balance < allocated_budget:
                     logger.warning(f"موجودی کل کافی برای تخصیص بودجه مورد نظر نیست. معامله رد شد.")
@@ -402,11 +437,14 @@ if __name__ == "__main__":
         trader.get_usdt_balance()
 
         while True:
-            if trader.active_positions and trader.exchange:
+            if trader.active_positions:
                 for symbol in list(trader.active_positions.keys()):
                     try:
-                        ticker = trader.exchange.fetch_ticker(symbol)
-                        current_price = float(ticker['last'])
+                        base_symbol = symbol.split('/')[0]
+                        wallex_symbol = f"{base_symbol}USDT"
+                        current_price = trader.get_wallex_price(wallex_symbol)
+                        if current_price is None:
+                            continue
                         close_result = trader.check_tp_sl_and_update(symbol, current_price)
                         if close_result:
                             notifier.send_to_render(close_result)
