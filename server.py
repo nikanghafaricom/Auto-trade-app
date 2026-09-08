@@ -47,7 +47,7 @@ class WallexTrader:
         self.positions_file = "active_positions.json"
         self.active_positions = self.load_positions()
         self.base_url = "https://api.wallex.ir/v1"
-        
+
         try:
             self.exchange = ccxt.coinex({
                 'enableRateLimit': True,
@@ -96,14 +96,14 @@ class WallexTrader:
             headers = {"X-API-Key": self.config.WALLEX_API_KEY}
             res = requests.get(url, headers=headers, timeout=10)
             logger.info(f"پاسخ دیاگ لحظه‌ای API والکس - کد پاسخ: {res.status_code}")
-            
+
             if res.status_code == 200:
                 response = res.json()
                 logger.info(f"محتوای پاسخ موجودی: {response}")
-                
+
                 result_data = response.get('result', response)
                 balances_dict = result_data.get('balances', result_data)
-                
+
                 if isinstance(balances_dict, dict):
                     usdt_info = balances_dict.get('USDT', {})
                     usdt_val = float(usdt_info.get('value', usdt_info.get('free', 0.0)))
@@ -137,17 +137,74 @@ class WallexTrader:
     def check_tp_sl_and_update(self, symbol: str, current_price: float) -> Optional[dict]:
         if symbol not in self.active_positions:
             return None
-        
+
         pos = self.active_positions[symbol]
         entry_price = pos["entry_price"]
         tp_price = pos["tp_price"]
         sl_price = pos["sl_price"]
-        
+
         if current_price >= tp_price or current_price <= sl_price:
             logger.info(f"حد سود یا حد زیان برای {symbol} فعال شد! قیمت لحظه‌ای: {current_price} | قیمت ورود: {entry_price}")
             return self.execute_spot_order(symbol, "SELL", current_price)
-            
+
         return None
+
+    def _submit_order(self, wallex_symbol: str, side: str, quantity: float, price: float, order_type: str = "market"):
+        """ارسال سفارش به والکس. اگر order_type=limit باشد، فیلد price هم ارسال می‌شود."""
+        url = f"{self.base_url}/account/orders"
+        headers = {
+            "X-API-Key": self.config.WALLEX_API_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "symbol": wallex_symbol,
+            "type": order_type,
+            "side": side,
+            "quantity": round(quantity, 6)
+        }
+        if order_type == "limit":
+            payload["price"] = str(price)
+
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        return response
+
+    def _place_order_with_retries(self, wallex_symbol: str, side: str, quantity: float, price: float, allow_limit_fallback: bool = True):
+        """
+        اول Market امتحان می‌شود.
+        اگر allow_limit_fallback=False باشد (حالت خرید): با شکست Market، دیگر سراغ Limit نمی‌رود و همینجا رد می‌شود.
+        اگر allow_limit_fallback=True باشد (حالت فروش): در صورت عدم پشتیبانی Market:
+            - Limit با آفست ۰.۲٪ (سریع، کمترین آسیب به سود)
+            - اگر بازهم شکست خورد: Limit با آفست ۱٪ (تضمین بیشتر برای انجام سفارش)
+        side: "buy" یا "sell" (حروف کوچک، مطابق پارامتر ورودی به _submit_order)
+        """
+        # مرحله ۱: Market
+        response = self._submit_order(wallex_symbol, side, quantity, price, "market")
+        logger.info(f"پاسخ سفارش Market ({side}) والکس - کد: {response.status_code} | متن: {response.text}")
+        if response.status_code in [200, 201]:
+            return response
+
+        if not allow_limit_fallback:
+            logger.warning(f"سفارش Market ({side}) برای {wallex_symbol} ناموفق بود؛ طبق تنظیم، سراغ Limit نمی‌رویم و معامله رد می‌شود.")
+            return response
+
+        if "امکان ثبت سفارش قیمت بازار" not in response.text:
+            # خطا ربطی به عدم پشتیبانی Market ندارد؛ رفتن به مراحل بعد فایده‌ای ندارد
+            return response
+
+        # مرحله ۲: Limit با آفست کم (۰.۲٪)
+        offset_small = 0.002
+        limit_price = price * (1 + offset_small) if side == "buy" else price * (1 - offset_small)
+        response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
+        logger.info(f"پاسخ سفارش Limit آفست ۰.۲٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
+        if response.status_code in [200, 201]:
+            return response
+
+        # مرحله ۳: Limit با آفست بیشتر (۱٪)
+        offset_large = 0.01
+        limit_price = price * (1 + offset_large) if side == "buy" else price * (1 - offset_large)
+        response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
+        logger.info(f"پاسخ سفارش Limit آفست ۱٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
+        return response
 
     def execute_spot_order(self, symbol: str, side: str, price: float, dynamic_tp: float = None, dynamic_sl: float = None):
         try:
@@ -179,31 +236,17 @@ class WallexTrader:
                 if usdt_balance < allocated_budget:
                     logger.warning(f"موجودی کل کافی برای تخصیص بودجه مورد نظر نیست. معامله رد شد.")
                     return None
-                
+
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
-                url = f"{self.base_url}/account/orders"
-                headers = {
-                    "X-API-Key": self.config.WALLEX_API_KEY,
-                    "Content-Type": "application/json"
-                }
-                
                 amount = allocated_budget / price if price > 0 else 0
 
-                payload = {
-                    "symbol": wallex_symbol,
-                    "type": "market",
-                    "side": "buy",
-                    "amount": round(amount, 6)
-                }
-
-                response = requests.post(url, headers=headers, json=payload, timeout=15)
-                logger.info(f"پاسخ ثبت سفارش خرید والکس - کد: {response.status_code} | متن: {response.text}")
+                response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, allow_limit_fallback=False)
 
                 if response.status_code in [200, 201]:
                     tp_price = dynamic_tp if dynamic_tp else price * 1.025
                     sl_price = dynamic_sl if dynamic_sl else price * 0.985
-                    
+
                     self.active_positions[symbol] = {
                         "entry_price": price,
                         "tp_price": tp_price,
@@ -226,7 +269,7 @@ class WallexTrader:
                         res_json = res.json()
                         result_data = res_json.get('result', res_json)
                         balances_dict = result_data.get('balances', result_data)
-                        
+
                         if isinstance(balances_dict, dict):
                             asset_info = balances_dict.get(base_symbol, {})
                             base_free = float(asset_info.get('value', asset_info.get('free', 0.0)))
@@ -237,22 +280,9 @@ class WallexTrader:
                                     break
                 except Exception as e:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
-                
-                if base_free > 0:
-                    url = f"{self.base_url}/account/orders"
-                    headers = {
-                        "X-API-Key": self.config.WALLEX_API_KEY,
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "symbol": wallex_symbol,
-                        "type": "market",
-                        "side": "sell",
-                        "amount": round(base_free, 6)
-                    }
 
-                    response = requests.post(url, headers=headers, json=payload, timeout=15)
-                    logger.info(f"پاسخ ثبت سفارش فروش والکس - کد: {response.status_code} | متن: {response.text}")
+                if base_free > 0:
+                    response = self._place_order_with_retries(wallex_symbol, "sell", base_free, price)
 
                     if response.status_code in [200, 201]:
                         pnl_percent = 0.0
@@ -317,7 +347,7 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
         global trader, notifier, config
         try:
             auth_token = self.headers.get("X-Secret-Token")
-            
+
             if config.SECRET_TOKEN and auth_token != config.SECRET_TOKEN:
                 logger.warning("تلاش برای دسترسی غیرمجاز به وب‌هوک همروش با توکن اشتباه.")
                 self.send_response(403)
@@ -343,7 +373,7 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 dynamic_tp = data.get("tp1")
                 dynamic_sl = data.get("sl")
                 logger.info(f"دستور اجرای معامله از رندر دریافت شد: {symbol} | سمت: {side}")
-                
+
                 trade_result = trader.execute_spot_order(symbol, side, price, dynamic_tp, dynamic_sl)
 
                 if trade_result:
