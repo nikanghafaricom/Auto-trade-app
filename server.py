@@ -8,6 +8,7 @@ import gc
 import json
 import hmac
 import hashlib
+import math
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
@@ -113,7 +114,7 @@ class WallexTrader:
             return None
 
     def get_market_limits(self, wallex_symbol: str):
-        """دریافت حداقل مقدار (minQty) و حداقل ارزش سفارش (minNotional) یک بازار از والکس."""
+        """دریافت حداقل مقدار (minQty)، حداقل ارزش سفارش (minNotional) و رقم اعشار مجاز (stepSize) یک بازار از والکس."""
         try:
             url = f"{self.base_url}/markets"
             res = requests.get(url, timeout=10)
@@ -123,12 +124,13 @@ class WallexTrader:
                 symbol_data = symbols.get(wallex_symbol, {})
                 min_qty = float(symbol_data.get('minQty', 0) or 0)
                 min_notional = float(symbol_data.get('minNotional', 0) or 0)
-                return min_qty, min_notional
+                step_size = int(symbol_data.get('stepSize', 6))
+                return min_qty, min_notional, step_size
             logger.error(f"خطا در دریافت محدودیت‌های بازار {wallex_symbol} - کد: {res.status_code}")
-            return 0.0, 0.0
+            return 0.0, 0.0, 6
         except Exception as e:
             logger.error(f"خطای شبکه در دریافت محدودیت‌های بازار {wallex_symbol}: {e}")
-            return 0.0, 0.0
+            return 0.0, 0.0, 6
 
     def get_wallex_price(self, wallex_symbol: str) -> Optional[float]:
         """دریافت قیمت لحظه‌ای (lastPrice) مستقیم از اندپوینت عمومی بازارهای والکس."""
@@ -188,7 +190,7 @@ class WallexTrader:
             "symbol": wallex_symbol,
             "type": order_type,
             "side": side,
-            "quantity": round(quantity, 5),
+            "quantity": quantity,
             "price": str(price)
         }
 
@@ -254,7 +256,7 @@ class WallexTrader:
                 if allocated_budget < 1.0:
                     allocated_budget = 1.0
 
-                min_qty, min_notional = self.get_market_limits(wallex_symbol)
+                min_qty, min_notional, step_size = self.get_market_limits(wallex_symbol)
                 if min_notional > 0:
                     safe_budget = min_notional * 1.05  # حاشیه امن ۵٪ برای جلوگیری از افتادن زیر حداقل هنگام فروش با افت جزئی قیمت
                     if allocated_budget < safe_budget:
@@ -268,6 +270,7 @@ class WallexTrader:
                 logger.info(f"سرمایه نهایی تخصیص‌یافته برای {symbol}: {allocated_budget} USDT (اسپات / بدون اهرم)")
 
                 amount = allocated_budget / price if price > 0 else 0
+                amount = round(amount, step_size)
 
                 response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, limit_offsets=[0, 0.001, 0.002, 0.005])
 
@@ -310,7 +313,18 @@ class WallexTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
 
                 if base_free > 0:
-                    response = self._place_order_with_retries(wallex_symbol, "sell", base_free, price, limit_offsets=[0, 0.002, 0.01])
+                    _, _, step_size = self.get_market_limits(wallex_symbol)
+                    factor = 10 ** step_size
+                    base_free_adjusted = math.floor(base_free * factor) / factor
+
+                    if base_free_adjusted <= 0:
+                        logger.warning(f"مقدار {base_symbol} پس از گرد کردن به دقت مجاز بازار ({step_size} رقم اعشار) صفر شد؛ فروش ممکن نیست.")
+                        if symbol in self.active_positions:
+                            del self.active_positions[symbol]
+                            self.save_positions()
+                        return None
+
+                    response = self._place_order_with_retries(wallex_symbol, "sell", base_free_adjusted, price, limit_offsets=[0, 0.002, 0.01])
 
                     if response.status_code in [200, 201]:
                         pnl_percent = 0.0
