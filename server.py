@@ -200,6 +200,35 @@ class WallexTrader:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         return response
 
+    def get_order_status(self, client_order_id: str) -> Optional[dict]:
+        """دریافت وضعیت واقعی یک سفارش (FILLED / NEW / ...) با شناسه clientOrderId."""
+        try:
+            url = f"{self.base_url}/account/orders/{client_order_id}"
+            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                return res.json().get('result', {})
+            logger.error(f"خطا در دریافت وضعیت سفارش {client_order_id} - کد: {res.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"خطای شبکه در دریافت وضعیت سفارش {client_order_id}: {e}")
+            return None
+
+    def cancel_order(self, client_order_id: str) -> bool:
+        """کنسل کردن سفارشی که پر نشده، تا موجودی قفل‌شده آزاد شود."""
+        try:
+            url = f"{self.base_url}/account/orders"
+            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+            res = requests.delete(url, headers=headers, params={"clientOrderId": client_order_id}, timeout=10)
+            if res.status_code in [200, 201]:
+                logger.info(f"سفارش پرنشده {client_order_id} با موفقیت کنسل شد و موجودی قفل‌شده آزاد شد.")
+                return True
+            logger.warning(f"کنسل سفارش {client_order_id} ناموفق بود - کد: {res.status_code} | متن: {res.text}")
+            return False
+        except Exception as e:
+            logger.error(f"خطای شبکه در کنسل سفارش {client_order_id}: {e}")
+            return False
+
     def _place_order_with_retries(self, wallex_symbol: str, side: str, quantity: float, price: float, limit_offsets: list = None):
         """
         اول Market امتحان می‌شود.
@@ -208,6 +237,13 @@ class WallexTrader:
         خرید: قیمت با (1 + آفست) ضرب می‌شود (بالاتر).
         فروش: قیمت با (1 - آفست) ضرب می‌شود (پایین‌تر).
         side: "buy" یا "sell" (حروف کوچک، مطابق پارامتر ورودی به _submit_order)
+
+        نکته مهم: برای سفارش‌های Limit، فقط ثبت‌شدن کافی نیست - باید واقعاً FILLED شده باشد.
+        اگر بعد از چند ثانیه هنوز پر نشده بود، سفارش کنسل می‌شود (تا موجودی قفل‌شده آزاد شود)
+        و مرحله بعدی (آفست بعدی) امتحان می‌شود.
+
+        خروجی: شیء Response در صورت پر شدن واقعی (Market یا Limit)، یا None اگر هیچ‌کدام از
+        مراحل واقعاً پر نشدند.
         """
         response = self._submit_order(wallex_symbol, side, quantity, price, "market")
         logger.info(f"پاسخ سفارش Market ({side}) والکس - کد: {response.status_code} | متن: {response.text}")
@@ -216,19 +252,41 @@ class WallexTrader:
 
         if not limit_offsets:
             logger.warning(f"سفارش Market ({side}) برای {wallex_symbol} ناموفق بود؛ طبق تنظیم، سراغ Limit نمی‌رویم و معامله رد می‌شود.")
-            return response
+            return None
 
         if "امکان ثبت سفارش قیمت بازار" not in response.text:
-            return response
+            return None
 
         for offset in limit_offsets:
             limit_price = price * (1 + offset) if side == "buy" else price * (1 - offset)
             response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
             logger.info(f"پاسخ سفارش Limit آفست {offset * 100:.1f}٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
-            if response.status_code in [200, 201]:
+
+            if response.status_code not in [200, 201]:
+                continue
+
+            try:
+                client_order_id = response.json().get('result', {}).get('clientOrderId')
+            except Exception:
+                client_order_id = None
+
+            if not client_order_id:
+                logger.warning("شناسه سفارش (clientOrderId) در پاسخ یافت نشد؛ امکان تایید پر شدن سفارش وجود ندارد.")
+                continue
+
+            time.sleep(2)  # فرصت کوتاه برای پر شدن سفارش روی صف بازار
+            order_status = self.get_order_status(client_order_id)
+            status = order_status.get('status') if order_status else None
+
+            if status == "FILLED":
+                logger.info(f"سفارش Limit آفست {offset * 100:.1f}٪ ({side}) واقعاً پر شد (FILLED).")
                 return response
 
-        return response
+            logger.warning(f"سفارش Limit آفست {offset * 100:.1f}٪ ({side}) پر نشد (وضعیت: {status}) - کنسل و رفتن به مرحله بعدی.")
+            self.cancel_order(client_order_id)
+
+        logger.error(f"هیچ‌کدام از مراحل Market/Limit برای {wallex_symbol} ({side}) واقعاً پر نشدند.")
+        return None
 
     def execute_spot_order(self, symbol: str, side: str, price: float, dynamic_tp: float = None, dynamic_sl: float = None):
         try:
@@ -274,7 +332,7 @@ class WallexTrader:
 
                 response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, limit_offsets=[0, 0.001, 0.002, 0.005])
 
-                if response.status_code in [200, 201]:
+                if response is not None and response.status_code in [200, 201]:
                     tp_price = dynamic_tp if dynamic_tp else price * 1.025
                     sl_price = dynamic_sl if dynamic_sl else price * 0.985
 
@@ -284,10 +342,10 @@ class WallexTrader:
                         "sl_price": sl_price
                     }
                     self.save_positions()
-                    logger.info(f"سفارش خرید اسپات در والکس با موفقیت ثبت شد | TP: {tp_price} | SL: {sl_price}")
+                    logger.info(f"سفارش خرید اسپات در والکس با موفقیت ثبت شد (تایید FILLED) | TP: {tp_price} | SL: {sl_price}")
                     return None
                 else:
-                    logger.error(f"خطا در ثبت سفارش خرید والکس: {response.text}")
+                    logger.error(f"خرید {symbol} در هیچ‌کدام از مراحل واقعاً پر نشد؛ معامله رد شد و پوزیشنی ثبت نمی‌شود.")
                     return None
 
             elif side == "SELL":
@@ -326,7 +384,7 @@ class WallexTrader:
 
                     response = self._place_order_with_retries(wallex_symbol, "sell", base_free_adjusted, price, limit_offsets=[0, 0.002, 0.01])
 
-                    if response.status_code in [200, 201]:
+                    if response is not None and response.status_code in [200, 201]:
                         pnl_percent = 0.0
                         if symbol in self.active_positions:
                             entry_price = self.active_positions[symbol]["entry_price"]
@@ -334,7 +392,7 @@ class WallexTrader:
                             del self.active_positions[symbol]
                             self.save_positions()
 
-                        logger.info(f"سفارش فروش اسپات در والکس با موفقیت ثبت شد | سود/زیان: {pnl_percent:.2f}%")
+                        logger.info(f"سفارش فروش اسپات در والکس با موفقیت ثبت شد (تایید FILLED) | سود/زیان: {pnl_percent:.2f}%")
                         return {
                             "action": "close_trade",
                             "symbol": symbol,
@@ -343,7 +401,7 @@ class WallexTrader:
                             "pnl": round(pnl_percent, 2)
                         }
                     else:
-                        logger.error(f"خطا در ثبت سفارش فروش والکس: {response.text}")
+                        logger.error(f"فروش {symbol} در هیچ‌کدام از مراحل واقعاً پر نشد؛ پوزیشن همچنان باز می‌ماند تا تلاش بعدی.")
                         return None
                 else:
                     logger.warning(f"دارایی کافی از ارز {base_symbol} برای فروش در والکس موجود نیست.")
