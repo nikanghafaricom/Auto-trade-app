@@ -166,6 +166,32 @@ class WallexTrader:
             self.last_capital_reset_time = now
             logger.info(f"دوره‌ی ۳ ساعته تکمیل شد. سرمایه پایه بر اساس موجودی جدید به‌روز شد: {self.initial_capital} USDT")
 
+    def get_asset_balance(self, asset_symbol: str) -> float:
+        """دریافت موجودی آزاد یک ارز خاص (نه USDT) از حساب والکس."""
+        try:
+            url = f"{self.base_url}/account/balances"
+            headers = {"X-API-Key": self.config.WALLEX_API_KEY}
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                res_json = res.json()
+                result_data = res_json.get('result', res_json)
+                balances_dict = result_data.get('balances', result_data)
+
+                if isinstance(balances_dict, dict):
+                    asset_info = balances_dict.get(asset_symbol, {})
+                    return float(asset_info.get('value', asset_info.get('free', 0.0)))
+                elif isinstance(balances_dict, list):
+                    for asset in balances_dict:
+                        if asset.get('asset', asset.get('symbol', '')).upper() == asset_symbol.upper():
+                            return float(asset.get('value', asset.get('free', 0.0)))
+                return 0.0
+            else:
+                logger.error(f"خطا در دریافت موجودی {asset_symbol} - کد: {res.status_code}")
+                return 0.0
+        except Exception as e:
+            logger.error(f"خطای شبکه در دریافت موجودی {asset_symbol}: {e}")
+            return 0.0
+
     def check_tp_sl_and_update(self, symbol: str, current_price: float) -> Optional[dict]:
         if symbol not in self.active_positions:
             return None
@@ -174,6 +200,23 @@ class WallexTrader:
         entry_price = pos["entry_price"]
         tp_price = pos["tp_price"]
         sl_price = pos["sl_price"]
+
+        # ==================== چک اضطراری: نزدیک شدن به حداقل ارزش مجاز بازار ====================
+        # خرید با ۱۵٪ حاشیه بالای کف انجام می‌شود. اگر ۱۰ واحد از این ۱۵٪ مصرف شود
+        # (یعنی فقط ۵٪ حاشیه باقی بماند)، همین الان و مستقل از SL معمولی فروش اضطراری انجام می‌شود.
+        base_symbol = symbol.split('/')[0]
+        wallex_symbol = f"{base_symbol}USDT"
+        _, min_notional, _, _ = self.get_market_limits(wallex_symbol)
+        if min_notional > 0:
+            base_free = self.get_asset_balance(base_symbol)
+            current_value = base_free * current_price
+            emergency_floor = min_notional * 1.05  # فقط ۵٪ حاشیه باقی‌مانده تا کف مطلق
+            if base_free > 0 and current_value <= emergency_floor:
+                logger.warning(
+                    f"هشدار اضطراری: ارزش دارایی {symbol} ({current_value:.4f} USDT) فقط ۵٪ بالای حداقل مجاز بازار "
+                    f"({min_notional} USDT) است؛ فروش اضطراری همین الان آغاز می‌شود."
+                )
+                return self.execute_spot_order(symbol, "SELL", current_price)
 
         logger.info(f"چک نظارتی {symbol} | قیمت لحظه‌ای: {current_price} | ورود: {entry_price} | TP: {tp_price} | SL: {sl_price}")
 
@@ -362,26 +405,7 @@ class WallexTrader:
                     return None
 
             elif side == "SELL":
-                base_free = 0.0
-                try:
-                    url = f"{self.base_url}/account/balances"
-                    headers = {"X-API-Key": self.config.WALLEX_API_KEY}
-                    res = requests.get(url, headers=headers, timeout=10)
-                    if res.status_code == 200:
-                        res_json = res.json()
-                        result_data = res_json.get('result', res_json)
-                        balances_dict = result_data.get('balances', result_data)
-
-                        if isinstance(balances_dict, dict):
-                            asset_info = balances_dict.get(base_symbol, {})
-                            base_free = float(asset_info.get('value', asset_info.get('free', 0.0)))
-                        elif isinstance(balances_dict, list):
-                            for asset in balances_dict:
-                                if asset.get('asset', asset.get('symbol', '')).upper() == base_symbol.upper():
-                                    base_free = float(asset.get('value', asset.get('free', 0.0)))
-                                    break
-                except Exception as e:
-                    logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
+                base_free = self.get_asset_balance(base_symbol)
 
                 if base_free > 0:
                     _, _, step_size, _ = self.get_market_limits(wallex_symbol)
