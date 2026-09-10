@@ -115,7 +115,7 @@ class WallexTrader:
             return None
 
     def get_market_limits(self, wallex_symbol: str):
-        """دریافت حداقل مقدار (minQty)، حداقل ارزش سفارش (minNotional) و رقم اعشار مجاز (stepSize) یک بازار از والکس."""
+        """دریافت حداقل مقدار (minQty)، حداقل ارزش سفارش (minNotional)، رقم اعشار مجاز مقدار (stepSize) و رقم اعشار مجاز قیمت (tickSize) یک بازار از والکس."""
         try:
             url = f"{self.base_url}/markets"
             res = requests.get(url, timeout=10)
@@ -126,12 +126,13 @@ class WallexTrader:
                 min_qty = float(symbol_data.get('minQty', 0) or 0)
                 min_notional = float(symbol_data.get('minNotional', 0) or 0)
                 step_size = int(symbol_data.get('stepSize', 6))
-                return min_qty, min_notional, step_size
+                tick_size = int(symbol_data.get('tickSize', 4))
+                return min_qty, min_notional, step_size, tick_size
             logger.error(f"خطا در دریافت محدودیت‌های بازار {wallex_symbol} - کد: {res.status_code}")
-            return 0.0, 0.0, 6
+            return 0.0, 0.0, 6, 4
         except Exception as e:
             logger.error(f"خطای شبکه در دریافت محدودیت‌های بازار {wallex_symbol}: {e}")
-            return 0.0, 0.0, 6
+            return 0.0, 0.0, 6, 4
 
     def get_wallex_price(self, wallex_symbol: str) -> Optional[float]:
         """دریافت قیمت لحظه‌ای (lastPrice) مستقیم از اندپوینت عمومی بازارهای والکس."""
@@ -257,8 +258,12 @@ class WallexTrader:
         if "امکان ثبت سفارش قیمت بازار" not in response.text:
             return None
 
+        # گرفتن رقم اعشار مجاز قیمت (tickSize) این بازار، تا قیمت‌های Limit درست رند شوند
+        _, _, _, tick_size = self.get_market_limits(wallex_symbol)
+
         for offset in limit_offsets:
             limit_price = price * (1 + offset) if side == "buy" else price * (1 - offset)
+            limit_price = round(limit_price, tick_size)
             response = self._submit_order(wallex_symbol, side, quantity, limit_price, "limit")
             logger.info(f"پاسخ سفارش Limit آفست {offset * 100:.1f}٪ ({side}) - کد: {response.status_code} | متن: {response.text}")
 
@@ -314,9 +319,9 @@ class WallexTrader:
                 if allocated_budget < 1.0:
                     allocated_budget = 1.0
 
-                min_qty, min_notional, step_size = self.get_market_limits(wallex_symbol)
+                min_qty, min_notional, step_size, _ = self.get_market_limits(wallex_symbol)
                 if min_notional > 0:
-                    safe_budget = min_notional * 1.05
+                    safe_budget = min_notional * 1.15
                     if allocated_budget < safe_budget:
                         allocated_budget = safe_budget
                         logger.info(f"بودجه {symbol} برای رعایت حداقل ارزش مجاز بازار ({min_notional} USDT) به {allocated_budget:.4f} USDT افزایش یافت.")
@@ -329,6 +334,14 @@ class WallexTrader:
 
                 amount = allocated_budget / price if price > 0 else 0
                 amount = round(amount, step_size)
+
+                if min_qty > 0 and amount < min_qty:
+                    required_budget = min_qty * price * 1.05
+                    if usdt_balance < required_budget:
+                        logger.warning(f"مقدار محاسبه‌شده ({amount}) کمتر از حداقل مجاز بازار ({min_qty}) است و موجودی برای جبرانش کافی نیست. معامله رد شد.")
+                        return None
+                    amount = round(min_qty * 1.02, step_size)
+                    logger.info(f"مقدار {symbol} برای رعایت حداقل مجاز بازار ({min_qty}) به {amount} افزایش یافت.")
 
                 response = self._place_order_with_retries(wallex_symbol, "buy", amount, price, limit_offsets=[0, 0.001, 0.002, 0.005])
 
@@ -371,7 +384,7 @@ class WallexTrader:
                     logger.error(f"خطا در استعلام دارایی پایه برای فروش در والکس: {e}")
 
                 if base_free > 0:
-                    _, _, step_size = self.get_market_limits(wallex_symbol)
+                    _, _, step_size, _ = self.get_market_limits(wallex_symbol)
                     factor = 10 ** step_size
                     base_free_adjusted = math.floor(base_free * factor) / factor
 
