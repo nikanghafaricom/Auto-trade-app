@@ -399,7 +399,7 @@ class WallexTrader:
                     }
                     self.save_positions()
                     logger.info(f"سفارش خرید اسپات در والکس با موفقیت ثبت شد (تایید FILLED) | TP: {tp_price} | SL: {sl_price}")
-                    return None
+                    return {"action": "trade_opened", "symbol": symbol}
                 else:
                     logger.error(f"خرید {symbol} در هیچ‌کدام از مراحل واقعاً پر نشد؛ معامله رد شد و پوزیشنی ثبت نمی‌شود.")
                     return None
@@ -514,7 +514,17 @@ class HamraveshWebhookHandler(BaseHTTPRequestHandler):
                 trade_result = trader.execute_spot_order(symbol, side, price, dynamic_tp, dynamic_sl)
 
                 if trade_result:
-                    notifier.send_to_render(trade_result)
+                    # close_trade یا سایر فیدبک‌ها — trade_opened را به رندر نمی‌فرستیم
+                    if trade_result.get("action") != "trade_opened":
+                        notifier.send_to_render(trade_result)
+                elif side == "BUY":
+                    # خرید در صرافی انجام نشد — به رندر خبر بده تا پوزیشن ساختگی را پاک کند
+                    notifier.send_to_render({
+                        "action": "trade_failed",
+                        "symbol": symbol,
+                        "side": side
+                    })
+                    logger.warning(f"trade_failed برای {symbol} به رندر اعلام شد.")
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
